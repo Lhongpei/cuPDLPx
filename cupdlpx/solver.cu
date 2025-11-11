@@ -54,7 +54,9 @@ __global__ void compute_delta_solution_kernel(
     const double *initial_dual, const double *pdhg_dual, double *delta_dual,
     int n_vars, int n_cons);
 static void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state);
+static void fused_compute_next_pdhg_primal_solution(pdhg_solver_state_t *state);
 static void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state);
+static void fused_compute_next_pdhg_dual_solution(pdhg_solver_state_t *state);
 static void halpern_update(pdhg_solver_state_t *state, double reflection_coefficient);
 static void rescale_solution(pdhg_solver_state_t *state);
 static cupdlpx_result_t *create_result_from_state(pdhg_solver_state_t *state);
@@ -733,6 +735,13 @@ static pdhg_solver_state_t *initialize_solver_state(
     CUDA_CHECK(cudaMemcpy(state->ones_dual_d, ones_dual_h, state->num_constraints * sizeof(double), cudaMemcpyHostToDevice));
     free(ones_dual_h);
 
+    // int max_nnz_A_row = calculate_max_nnz_row(n_cons, state->constraint_matrix->row_ptr);
+    // int max_nnz_A_col = calculate_max_nnz_col(n_vars, state->constraint_matrix_t->row_ptr);
+    // if (max_nnz_A_row > fmax(500.0, 1.0)) state->dual_update_algorithm = CUSPARSE_UPDATE;
+    // else state->dual_update_algorithm = FUSED_UPDATE;
+    // if (max_nnz_A_col > fmax(500.0, 1.0)) state->primal_update_algorithm = CUSPARSE_UPDATE;
+    // else state->primal_update_algorithm = FUSED_UPDATE;
+
     return state;
 }
 
@@ -750,6 +759,36 @@ __global__ void compute_next_pdhg_primal_solution_kernel(
     }
 }
 
+__global__ void fused_compute_next_pdhg_primal_solution_kernel(
+    const int *matAt_row_ptr, const int *matAt_col_ind, const double *matAt_val, 
+    double *dual_solution, double *dual_product,
+    double *current_primal, double *reflected_primal,
+    const double *objective, const double *var_lb, const double *var_ub, double step_size,
+    int n_vars)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_vars)
+    {
+        //Compute dual product
+        double sum = 0.0;
+        int row_start = matAt_row_ptr[i];
+        int row_end = matAt_row_ptr[i + 1];
+        for (int j = row_start; j < row_end; ++j)
+        {
+            int col = matAt_col_ind[j];
+            double val = matAt_val[j];
+            sum += val * dual_solution[col];
+        }
+        double dual_prod = sum;
+        //Compute PDHG primal solution
+        double temp = current_primal[i] - step_size * (objective[i] - dual_prod);
+        double temp_proj = fmax(var_lb[i], fmin(temp, var_ub[i]));
+        reflected_primal[i] = 2.0 * temp_proj - current_primal[i];
+        dual_product[i] = dual_prod;
+    }
+    return;
+}
+
 __global__ void compute_next_pdhg_primal_solution_major_kernel(
     const double *current_primal, double *pdhg_primal, double *reflected_primal,
     const double *dual_product, const double *objective, const double *var_lb,
@@ -765,6 +804,38 @@ __global__ void compute_next_pdhg_primal_solution_major_kernel(
     }
 }
 
+__global__ void fused_compute_next_pdhg_primal_solution_major_kernel(
+    const int *matAt_row_ptr, const int *matAt_col_ind, const double *matAt_val, 
+    double *dual_solution, double *dual_product,
+    double *current_primal, double *reflected_primal, double *pdhg_primal, double *dual_slack,
+    const double *objective, const double *var_lb, const double *var_ub, double step_size,
+    int n_vars)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_vars)
+    {
+        //Compute dual product
+        double sum = 0.0;
+        int row_start = matAt_row_ptr[i];
+        int row_end = matAt_row_ptr[i + 1];
+        for (int j = row_start; j < row_end; ++j)
+        {
+            int col = matAt_col_ind[j];
+            double val = matAt_val[j];
+            sum += val * dual_solution[col];
+        }
+        double dual_prod = sum;
+        //Compute PDHG primal solution
+        double temp = current_primal[i] - step_size * (objective[i] - dual_prod);
+        double temp_proj = fmax(var_lb[i], fmin(temp, var_ub[i]));
+        reflected_primal[i] = 2.0 * temp_proj - current_primal[i];
+        dual_slack[i] = (temp_proj - temp) / step_size;
+        pdhg_primal[i] = temp_proj;
+        dual_product[i] = dual_prod;
+    }
+    return;
+}
+
 __global__ void compute_next_pdhg_dual_solution_kernel(
     const double *current_dual, double *reflected_dual, const double *primal_product,
     const double *const_lb, const double *const_ub, int n, double step_size)
@@ -776,6 +847,36 @@ __global__ void compute_next_pdhg_dual_solution_kernel(
         double temp_proj = fmax(-const_ub[i], fmin(temp, -const_lb[i]));
         reflected_dual[i] = 2.0 * (temp - temp_proj) * step_size - current_dual[i];
     }
+}
+
+__global__ void fused_compute_next_pdhg_dual_solution_kernel(
+    const int *matA_row_ptr, const int *matA_col_ind, const double *matA_val, 
+    double *primal_solution, double *primal_product,
+    double *current_dual, double *reflected_dual,
+    const double *const_lb, const double *const_ub, double step_size,
+    int n_cons)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_cons)
+    {
+        //Compute primal product
+        double sum = 0.0;
+        int row_start = matA_row_ptr[i];
+        int row_end = matA_row_ptr[i + 1];
+        for (int j = row_start; j < row_end; ++j)
+        {
+            int col = matA_col_ind[j];
+            double val = matA_val[j];
+            sum += val * primal_solution[col];
+        }
+        double primal_prod = sum;
+        //Compute PDHG dual solution
+        double temp = current_dual[i] / step_size - primal_prod;
+        double temp_proj = fmax(-const_ub[i], fmin(temp, -const_lb[i]));
+        reflected_dual[i] = 2.0 * (temp - temp_proj) * step_size - current_dual[i];
+        primal_product[i] = primal_prod;
+    }
+    return;
 }
 
 __global__ void compute_next_pdhg_dual_solution_major_kernel(
@@ -793,6 +894,36 @@ __global__ void compute_next_pdhg_dual_solution_major_kernel(
     }
 }
 
+__global__ void fused_compute_next_pdhg_dual_major_solution(
+    const int *matA_row_ptr, const int *matA_col_ind, const double *matA_val, 
+    double *primal_solution, double *primal_product,
+    double *current_dual, double *reflected_dual, double *pdhg_dual,
+    const double *const_lb, const double *const_ub, double step_size,
+    int n_cons)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_cons)
+    {
+        //Compute primal product
+        double sum = 0.0;
+        int row_start = matA_row_ptr[i];
+        int row_end = matA_row_ptr[i + 1];
+        for (int j = row_start; j < row_end; ++j)
+        {
+            int col = matA_col_ind[j];
+            double val = matA_val[j];
+            sum += val * primal_solution[col];
+        }
+        double primal_prod = sum;
+        //Compute PDHG dual solution
+        double temp = current_dual[i] / step_size - primal_prod;
+        double temp_proj = fmax(-const_ub[i], fmin(temp, -const_lb[i]));
+        pdhg_dual[i] = (temp - temp_proj) * step_size;
+        reflected_dual[i] = 2.0 * pdhg_dual[i] - current_dual[i];
+        primal_product[i] = primal_prod;
+    }
+    return;
+}
 __global__ void halpern_update_kernel(
     const double *initial_primal, double *current_primal, const double *reflected_primal,
     const double *initial_dual, double *current_dual, const double *reflected_dual,
@@ -868,8 +999,15 @@ __global__ void compute_delta_dual_solution_kernel(
     }
 }
 
+
+
 static void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
 {
+    if (state->primal_update_algorithm == FUSED_UPDATE)
+    {
+        fused_compute_next_pdhg_primal_solution(state);
+        return;
+    }
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_sol, state->current_dual_solution));
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product));
 
@@ -896,8 +1034,40 @@ static void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
     }
 }
 
+static void fused_compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
+{
+    double step = state->step_size / state->primal_weight;
+
+    if (state->is_this_major_iteration || ((state->total_count + 2) % get_print_frequency(state->total_count + 2)) == 0)
+    {
+        fused_compute_next_pdhg_primal_solution_major_kernel<<<state->num_blocks_primal, THREADS_PER_BLOCK>>>(
+            state->constraint_matrix_t->row_ptr, state->constraint_matrix_t->col_ind, state->constraint_matrix_t->val,
+            state->current_dual_solution, state->dual_product,
+            state->current_primal_solution, state->reflected_primal_solution,
+            state->pdhg_primal_solution, state->dual_slack,
+            state->objective_vector, state->variable_lower_bound,
+            state->variable_upper_bound, step,
+            state->num_variables);
+    }
+    else
+    {
+        fused_compute_next_pdhg_primal_solution_kernel<<<state->num_blocks_primal, THREADS_PER_BLOCK>>>(
+            state->constraint_matrix_t->row_ptr, state->constraint_matrix_t->col_ind, state->constraint_matrix_t->val,
+            state->current_dual_solution,  state->dual_product,
+            state->current_primal_solution, state->reflected_primal_solution,
+            state->objective_vector, state->variable_lower_bound,
+            state->variable_upper_bound, step,
+            state->num_variables);
+    }
+}
+
 static void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
 {
+    if (state->dual_update_algorithm == FUSED_UPDATE)
+    {
+        fused_compute_next_pdhg_dual_solution(state);
+        return;
+    }
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_sol, state->reflected_primal_solution));
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_prod, state->primal_product));
 
@@ -920,6 +1090,32 @@ static void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
         compute_next_pdhg_dual_solution_kernel<<<state->num_blocks_dual, THREADS_PER_BLOCK>>>(
             state->current_dual_solution, state->reflected_dual_solution, state->primal_product,
             state->constraint_lower_bound, state->constraint_upper_bound, state->num_constraints, step);
+    }
+}
+
+static void fused_compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
+{
+    double step = state->step_size * state->primal_weight;
+
+    if (state->is_this_major_iteration || ((state->total_count + 2) % get_print_frequency(state->total_count + 2)) == 0)
+    {
+        fused_compute_next_pdhg_dual_major_solution<<<state->num_blocks_dual, THREADS_PER_BLOCK>>>(
+            state->constraint_matrix->row_ptr, state->constraint_matrix->col_ind, state->constraint_matrix->val,
+            state->reflected_primal_solution, state->primal_product,
+            state->current_dual_solution, state->reflected_dual_solution, state->pdhg_dual_solution,
+            state->constraint_lower_bound, state->constraint_upper_bound,
+            step,
+            state->num_constraints);
+    }
+    else
+    {
+        fused_compute_next_pdhg_dual_solution_kernel<<<state->num_blocks_dual, THREADS_PER_BLOCK>>>(
+            state->constraint_matrix->row_ptr, state->constraint_matrix->col_ind, state->constraint_matrix->val,
+            state->reflected_primal_solution, state->primal_product,
+            state->current_dual_solution, state->reflected_dual_solution,
+            state->constraint_lower_bound, state->constraint_upper_bound,
+            step,
+            state->num_constraints);
     }
 }
 

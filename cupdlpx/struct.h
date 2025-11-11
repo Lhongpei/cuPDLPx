@@ -108,6 +108,12 @@ typedef struct
 	bool feasibility_polishing;
 } pdhg_parameters_t;
 
+typedef enum
+{
+	CUSPARSE_UPDATE,
+	FUSED_UPDATE,
+} pdhg_update_algorithm_t;
+
 typedef struct
 {
 	int num_variables;
@@ -199,6 +205,9 @@ typedef struct
 
 	double *ones_primal_d;
 	double *ones_dual_d;
+
+	pdhg_update_algorithm_t primal_update_algorithm;
+	pdhg_update_algorithm_t dual_update_algorithm;
 } pdhg_solver_state_t;
 
 typedef struct
