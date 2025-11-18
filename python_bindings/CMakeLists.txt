@@ -10,18 +10,8 @@ set(PYBIND_SOURCES
 # build the pybind11 module
 pybind11_add_module(_cupdlpx_core MODULE ${PYBIND_SOURCES})
 
-# include paths
-target_include_directories(_cupdlpx_core
-  PRIVATE
-    ${PROJECT_SOURCE_DIR}/cupdlpx
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
-# link against the core native library and CUDA
-target_link_libraries(_cupdlpx_core
-  PRIVATE
+target_link_libraries(_cupdlpx_core PRIVATE
     cupdlpx_core
-    CUDA::cudart
 )
 
 # better error messages from pybind11

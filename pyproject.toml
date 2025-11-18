@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "cupdlpx"
-version = "0.1.2"
+version = "0.1.3"
 description = "Python bindings for cuPDLPx (GPU-accelerated first-order LP solver)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -27,6 +27,11 @@ sdist.include = ["tests/**", "pyproject.toml", "README.md", "LICENSE"]
 [tool.scikit-build.cmake.define]
 CMAKE_CUDA_ARCHITECTURES = "75;80;86;89;90;90-virtual"
 CMAKE_CUDA_STANDARD = "17"
+CUPDLPX_BUILD_PYTHON = "ON"
+CUPDLPX_BUILD_STATIC_LIB = "ON"
+CUPDLPX_BUILD_SHARED_LIB = "OFF"
+CUPDLPX_BUILD_CLI = "OFF"
+CUPDLPX_BUILD_TESTS = "OFF"
 
 [project.optional-dependencies]
 test = [
