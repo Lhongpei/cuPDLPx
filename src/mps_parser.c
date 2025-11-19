@@ -157,7 +157,7 @@ static int namemap_put(NameMap *map, const char *name)
 typedef struct
 {
     bool is_gz;
-    union
+    union FileHandle
     {
         gzFile gz_f;
         FILE *f;

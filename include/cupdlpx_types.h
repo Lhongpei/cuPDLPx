@@ -139,7 +139,7 @@ extern "C"
 		// treat abs(x) < zero_tolerance as zero
 		double zero_tolerance;
 
-		union
+		union MatrixData
 		{
 			struct
 			{					 // Dense (row-major)
