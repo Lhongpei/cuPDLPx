@@ -595,7 +595,7 @@ __global__ void compute_delta_solution_kernel(
     }
 }
 
-static void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
+void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
 {
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_sol,
                                           state->current_dual_solution));
@@ -632,7 +632,7 @@ static void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state)
     }
 }
 
-static void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
+void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
 {
     CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_sol,
                                           state->reflected_primal_solution));
@@ -667,7 +667,7 @@ static void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state)
     }
 }
 
-static void halpern_update(pdhg_solver_state_t *state,
+void halpern_update(pdhg_solver_state_t *state,
                            double reflection_coefficient)
 {
     double weight = (double)(state->inner_count + 1) / (state->inner_count + 2);
