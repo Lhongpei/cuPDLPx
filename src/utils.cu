@@ -345,6 +345,9 @@ void set_default_parameters(pdhg_parameters_t *params)
     params->restart_params.k_i = 0.01;
     params->restart_params.k_d = 0.0;
     params->restart_params.i_smooth = 0.3;
+
+    params->init_primal_weight = -1.0;
+    params->init_primal_weight_integral = -1.0;
 }
 
 #define PRINT_DIFF_INT(name, current, default_val) \

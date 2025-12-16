@@ -17,7 +17,7 @@ limitations under the License.
 #pragma once
 
 #include "cupdlpx_types.h"
-
+#include "internal_types.h"
 #ifdef __cplusplus
 extern "C"
 {
@@ -26,6 +26,11 @@ extern "C"
     cupdlpx_result_t *optimize(
         const pdhg_parameters_t *params,
         const lp_problem_t *original_problem);
+    pdhg_solver_state_t *initialize_solver_state(
+        const lp_problem_t *original_problem,
+        const rescale_info_t *rescale_info);
+    void rescale_info_free(rescale_info_t *info);
+    void pdhg_solver_state_free(pdhg_solver_state_t *state);
 
 #ifdef __cplusplus
 }

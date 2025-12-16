@@ -90,7 +90,9 @@ extern "C"
 		termination_criteria_t termination_criteria;
 		restart_parameters_t restart_params;
 		double reflection_coefficient;
-		bool feasibility_polishing;
+		bool feasibility_polishing; 
+		double init_primal_weight; //-1 for auto
+		double init_primal_weight_integral; //-1 for auto
 	} pdhg_parameters_t;
 
 	typedef struct
@@ -120,6 +122,13 @@ extern "C"
 		termination_reason_t termination_reason;
 		double feasibility_polishing_time;
 		int feasibility_iteration;
+
+		double primal_weight;
+		double primal_weight_integral;
+
+		int *primal_active_times;
+		int *dual_active_times;
+		int update_acitve_times;
 	} cupdlpx_result_t;
 
 	// matrix formats

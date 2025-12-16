@@ -18,6 +18,7 @@ limitations under the License.
 #include "mps_parser.h"
 #include "solver.h"
 #include "utils.h"
+#include "active_identify.h"
 #include <getopt.h>
 #include <libgen.h>
 #include <stdbool.h>
@@ -277,17 +278,20 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (argc - optind != 2)
-    {
-        fprintf(
-            stderr,
-            "Error: You must specify an input file and an output directory.\n\n");
-        print_usage(argv[0]);
-        return 1;
-    }
-
+    // if (argc - optind != 2)
+    // {
+    //     fprintf(
+    //         stderr,
+    //         "Error: You must specify an input file and an output directory.\n\n");
+    //     print_usage(argv[0]);
+    //     return 1;
+    // }
+    params.verbose = false;
     const char *filename = argv[optind];
     const char *output_dir = argv[optind + 1];
+
+    // filename = "/data1/MIPLIB2017/selected/lp/triptim2.mps.gz"; 
+    // output_dir = "/home/sevan/cuPDLPx/test/active_test/";
 
     char *instance_name = extract_instance_name(filename);
     if (instance_name == NULL)
@@ -304,8 +308,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    cupdlpx_result_t *result = optimize(&params, problem);
-
+    // cupdlpx_result_t *result = optimize(&params, problem);
+    cupdlpx_result_t *result = optimize_with_adaptive_active_identify(&params, problem, 20, 0.2, 1e-8, true);
     if (result == NULL)
     {
         fprintf(stderr, "Solver failed.\n");

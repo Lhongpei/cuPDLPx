@@ -125,6 +125,10 @@ typedef struct
 
 	double feasibility_polishing_time;
 	int feasibility_iteration;
+
+	int *primal_active_times;
+	int *dual_active_times;
+	int update_active_times;
 } pdhg_solver_state_t;
 
 typedef struct
