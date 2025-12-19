@@ -389,7 +389,8 @@ void check_violations_gpu(
     const bool *mask_row_host, 
     const bool *mask_col_host,
     const int *col_status_gpu, // Already on GPU
-    double tol,
+    double tol_row_basic,
+    double tol_col_basic,
     // Output pointers (Host side)
     int **out_violated_rows, int *out_num_rows,
     int **out_violated_cols, int *out_num_cols);
@@ -486,6 +487,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     const int max_adaptive_iteration,
     const double init_mask_threshold,
     const double tol,
+    const double time_limit,
     bool verbose)
 {
     // ------------------------------------------------------------------
@@ -529,6 +531,12 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         &mask_row,
         &main_result);
 
+    if (main_result->termination_reason == TERMINATION_REASON_DUAL_INFEASIBLE || main_result->termination_reason == TERMINATION_REASON_PRIMAL_INFEASIBLE)
+    {    
+        printf(">>> Stopping early (Original Problem Infeasible or Unbouned)\n");
+        return main_result;
+    }
+
     stats->init_reduced_n = count_true(mask_col, original_problem->num_variables);
     stats->init_reduced_m = count_true(mask_row, original_problem->num_constraints);
     stats->phase0_iter = main_result->total_count;
@@ -563,7 +571,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     set_default_parameters(params_for_sublp);
     params_for_sublp->termination_criteria.eps_optimal_relative = tol;
     params_for_sublp->termination_criteria.eps_feasible_relative = tol;
-    params_for_sublp->termination_criteria.iteration_limit = 500000;
+    params_for_sublp->termination_criteria.iteration_limit = 100000;
     params_for_sublp->verbose = false;
 
     double last_residual = get_residual(main_result);
@@ -575,6 +583,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     // 2. ADAPTIVE IDENTIFICATION LOOP
     // ------------------------------------------------------------------
     double obtain_global_optimal = false;
+    int no_prograss_time = 0;
     for(int iter = 0; iter < max_adaptive_iteration; ++iter)
     {
         stats->adaptive_loops = iter;
@@ -611,7 +620,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         print_initial_info(params, sub_lp);
 
         params_for_sublp->init_primal_weight = init_primal_weight;
-        params_for_sublp->init_primal_weight_integral = init_primal_weight_integral;
+        // params_for_sublp->init_primal_weight_integral = init_primal_weight_integral;
 
         cupdlpx_result_t *sub_result = optimize(params_for_sublp, sub_lp);
 
@@ -619,9 +628,12 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         // Update Stats
         stats->adaptive_iter_sum += sub_result->total_count;
         stats->adaptive_time_sum += sub_result->cumulative_time_sec;
+        if (stats->adaptive_time_sum + stats->phase0_time >= time_limit) {
+            if (verbose) printf(">>> Time limit reached during adaptive phase.\n");
+            break;
+        }
         
-        init_primal_weight = sub_result->primal_weight;
-        init_primal_weight_integral = sub_result->primal_weight_integral;
+        
         double residual = get_residual(sub_result);
 
         // Scatter Solution to Full GPU State
@@ -644,9 +656,24 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         int num_violated_rows = 0;
         int *violated_cols = NULL;
         int num_violated_cols = 0;
-        
+        // double tol_row_basic = tol;
+        // double tol_col_basic = tol;
+        if (residual >= 0.5 * last_residual){
+            no_prograss_time += 1;
+            // tol_row_basic *= pow(0.1, no_prograss_time);
+            // tol_col_basic *= pow(0.1, no_prograss_time);
+            
+        }
+
+        if (no_prograss_time >= 5) {
+            for (int i = 0; i < original_problem->num_constraints; ++i) mask_row[i] = true; 
+            for (int i = 0; i < original_problem->num_variables; ++i) mask_col[i] = true;
+            printf("No prograss for 5 iterations, adding all rows and columns to the sub-LP.\n");
+            break;
+        }
+
         check_violations_gpu(
-            complete_state, mask_row, mask_col, status_col_gpu, tol,
+            complete_state, mask_row, mask_col, status_col_gpu, tol, tol,
             &violated_rows, &num_violated_rows,
             &violated_cols, &num_violated_cols);
 
@@ -665,21 +692,25 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
 
         // Logic to update Sub-LP or Skip
         if (!should_break) {
-            if (residual < last_residual && sub_result->termination_reason != TERMINATION_REASON_OPTIMAL) {
+            if (residual < 0.5 * last_residual && sub_result->termination_reason != TERMINATION_REASON_OPTIMAL) {
                 printf("   Sub-LP Improved (%.3e -> %.3e), skipping mask update.\n", last_residual, residual);
                 
-                // Update Start Points for next iter
-                CUDA_CHECK(cudaMemcpy(start_x_full, complete_state->pdhg_primal_solution,
+                if (residual < best_residual) {
+                    best_residual = residual;
+                    CUDA_CHECK(cudaMemcpy(start_x_full, complete_state->pdhg_primal_solution,
                                       original_problem->num_variables * sizeof(double), cudaMemcpyDeviceToDevice));
-                CUDA_CHECK(cudaMemcpy(start_y_full, complete_state->pdhg_dual_solution,
-                                      original_problem->num_constraints * sizeof(double), cudaMemcpyDeviceToDevice));
-                
-                if (residual < best_residual) best_residual = residual;
-            } else {
+                    CUDA_CHECK(cudaMemcpy(start_y_full, complete_state->pdhg_dual_solution,
+                                        original_problem->num_constraints * sizeof(double), cudaMemcpyDeviceToDevice));
+                    init_primal_weight = sub_result->primal_weight;
+                    init_primal_weight_integral = sub_result->primal_weight_integral;
+                    }
+                no_prograss_time = 0;
+            } 
+            // else {
                 printf("   Updating Mask with violations.\n");
                 for (int i = 0; i < num_violated_rows; ++i) mask_row[violated_rows[i]] = true;
                 for (int i = 0; i < num_violated_cols; ++i) mask_col[violated_cols[i]] = true;
-            }
+            // }
         }
         
         last_residual = residual;
@@ -720,11 +751,12 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
 
     pdhg_parameters_t *final_params = new pdhg_parameters_t;
     set_default_parameters(final_params);
-    final_params->verbose = false;
+    final_params->verbose = true;
     final_params->termination_criteria.eps_optimal_relative = tol;
     final_params->termination_criteria.eps_feasible_relative = tol;
     final_params->init_primal_weight = init_primal_weight;
     final_params->init_primal_weight_integral = init_primal_weight_integral;
+    final_params->termination_criteria.time_sec_limit = time_limit - (stats->phase0_time + stats->adaptive_time_sum);
         
     if (obtain_global_optimal) {
         final_params->termination_criteria.iteration_limit = 0; // No iterations needed
@@ -897,6 +929,7 @@ void generate_initial_mask(
         {
             // Note: Julia code used "constrs_inactive_times".
             bool remove = (double)solver_res->dual_active_times[i] > limit;
+            // remove = false;
             mask_row[i] = !remove;
             if (remove)
                 rm_row_count++;
@@ -1162,8 +1195,9 @@ void check_violations_gpu(
     const pdhg_solver_state_t *state,
     const bool *mask_row_host, 
     const bool *mask_col_host,
-    const int *col_status_gpu, // Already on GPU
-    double tol,
+    const int *col_status_gpu,// Already on GPU
+    double tol_row_basic,
+    double tol_col_basic,
     // Output pointers (Host side)
     int **out_violated_rows, int *out_num_rows,
     int **out_violated_cols, int *out_num_cols)
@@ -1229,8 +1263,8 @@ void check_violations_gpu(
     // ---------------------------------------------------------
     // tol_row = max(norm(AL), norm(AU)) * tol
     // tol_col = norm(c) * tol
-    double tol_row = (1.0 + state->constraint_bound_norm) * tol;
-    double tol_col = (1.0 + state->objective_vector_norm) * tol;
+    double tol_row = (1.0 + state->constraint_bound_norm) * tol_row_basic;
+    double tol_col = (1.0 + state->objective_vector_norm) * tol_col_basic;
     // ---------------------------------------------------------
     // 4. Run Check Kernels
     // ---------------------------------------------------------

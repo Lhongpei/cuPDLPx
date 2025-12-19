@@ -21,6 +21,7 @@ extern "C"
         const int max_adaptive_iteration,
         const double init_mask_threshold,
         const double tol,
+        const double time_limit,
         bool verbose);
     cupdlpx_result_t *optimize_two_stage(
         const pdhg_parameters_t *params,
