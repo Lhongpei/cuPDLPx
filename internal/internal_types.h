@@ -19,7 +19,8 @@ limitations under the License.
 #include "cupdlpx_types.h"
 #include <cublas_v2.h>
 #include <cusparse.h>
-#include <stdbool.h>
+#include <mpi.h>
+#include <nccl.h>
 
 typedef struct
 {
@@ -30,6 +31,17 @@ typedef struct
 	int *col_ind;
 	double *val;
 } cu_sparse_matrix_csr_t;
+
+typedef struct {
+    MPI_Comm comm_global;
+    MPI_Comm comm_row;
+    MPI_Comm comm_col;
+    ncclComm_t nccl_row;
+    ncclComm_t nccl_col;
+    int rank_global;      
+    int coords[2];     
+    int dims[2];       
+} grid_context_t;
 
 typedef struct
 {
@@ -125,6 +137,8 @@ typedef struct
 
 	double feasibility_polishing_time;
 	int feasibility_iteration;
+
+	grid_context_t grid_context;
 } pdhg_solver_state_t;
 
 typedef struct

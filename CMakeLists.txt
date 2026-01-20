@@ -2,8 +2,18 @@
 # ROOT CMakeLists.txt for cuPDLPx (Unified Build System)
 # -----------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.20)
-
+set(CMAKE_CUDA_COMPILER "/usr/local/cuda-12.6/bin/nvcc" CACHE FILEPATH "CUDA Compiler" FORCE)
 # Project config
+option(ENABLE_MPI "Enable distributed computing with MPI" ON)
+
+if(ENABLE_MPI)
+    find_package(MPI REQUIRED)
+    add_definitions(-DUSE_MPI) 
+    message(STATUS "MPI is ENABLED")
+else()
+    message(STATUS "MPI is DISABLED (Single Node Mode)")
+endif()
+
 project(cupdlpx LANGUAGES C CXX CUDA)
 
 set(CUPDLPX_VERSION_MAJOR 0)
