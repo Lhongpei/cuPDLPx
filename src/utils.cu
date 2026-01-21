@@ -659,7 +659,7 @@ __global__ void dual_objective_dual_slack_contribution_array_kernel(
     }
 }
 
-static double get_vector_inf_norm(cublasHandle_t handle, int n,
+double get_vector_inf_norm(cublasHandle_t handle, int n,
                                   const double *x_d)
 {
     if (n <= 0)
@@ -674,7 +674,7 @@ static double get_vector_inf_norm(cublasHandle_t handle, int n,
     return fabs(max_val);
 }
 
-static double get_vector_sum(cublasHandle_t handle, int n, double *ones_d,
+double get_vector_sum(cublasHandle_t handle, int n, double *ones_d,
                              const double *x_d)
 {
     if (n <= 0)

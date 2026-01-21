@@ -6,13 +6,6 @@ set(CMAKE_CUDA_COMPILER "/usr/local/cuda-12.6/bin/nvcc" CACHE FILEPATH "CUDA Com
 # Project config
 option(ENABLE_MPI "Enable distributed computing with MPI" ON)
 
-if(ENABLE_MPI)
-    find_package(MPI REQUIRED)
-    add_definitions(-DUSE_MPI) 
-    message(STATUS "MPI is ENABLED")
-else()
-    message(STATUS "MPI is DISABLED (Single Node Mode)")
-endif()
 
 project(cupdlpx LANGUAGES C CXX CUDA)
 
@@ -126,6 +119,32 @@ set(CORE_LINK_LIBS PUBLIC
   ZLIB::ZLIB
   PSLP
 )
+
+if(ENABLE_MPI)
+    find_package(MPI REQUIRED)
+    add_definitions(-DUSE_MPI) 
+    message(STATUS "MPI is ENABLED")
+else()
+    message(STATUS "MPI is DISABLED (Single Node Mode)")
+endif()
+
+if(ENABLE_MPI AND MPI_FOUND)
+    list(APPEND CORE_LINK_LIBS MPI::MPI_CXX)
+    include_directories(${MPI_CXX_INCLUDE_PATH})
+    find_library(NCCL_LIB NAMES nccl 
+                 PATHS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}
+                       $ENV{NCCL_ROOT}/lib
+                       /usr/local/cuda/lib64
+                       /usr/lib/x86_64-linux-gnu)
+
+    if(NCCL_LIB)
+        message(STATUS "Found NCCL: ${NCCL_LIB}")
+        list(APPEND CORE_LINK_LIBS ${NCCL_LIB})
+    else()
+        message(WARNING "NCCL library not found explicitly, falling back to -lnccl")
+        list(APPEND CORE_LINK_LIBS nccl)
+    endif()
+endif()
 
 # -----------------------------------------------------------------------------
 # 1. Core STATIC Library (cupdlpx_core)

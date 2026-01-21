@@ -138,7 +138,7 @@ typedef struct
 	double feasibility_polishing_time;
 	int feasibility_iteration;
 
-	grid_context_t grid_context;
+	grid_context_t *grid_context;
 } pdhg_solver_state_t;
 
 typedef struct

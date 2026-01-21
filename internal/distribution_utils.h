@@ -15,21 +15,29 @@ extern "C"
  * @param P_col Number of processor columns
  * @return GridContext The initialized context structure
  */
+
 grid_context_t initialize_parallel_context(int P_row, int P_col);
 rescale_info_t* partition_rescale_info(
     rescale_info_t* global_info, 
-    grid_context_t* grid, 
+    const grid_context_t* grid, 
     partition_method_t method,
     int* out_n_start, 
     int* out_m_start
 );
 lp_problem_t* partition_lp_problem(
     const lp_problem_t* global_lp, 
-    grid_context_t* grid, 
+    const grid_context_t* grid, 
     partition_method_t method,
     int* out_n_start,  
     int* out_m_start 
 );
+rescale_info_t* deserialize_rescale_info(const char *buffer);
+void serialize_rescale_info(const rescale_info_t *info, char *buffer);
+size_t get_rescale_info_size(const rescale_info_t *info);
+lp_problem_t* deserialize_lp_problem_from_ptr(const char **ptr_ref);
+void serialize_lp_problem_to_ptr(const lp_problem_t *lp, char **ptr_ref);
+size_t get_lp_problem_size(const lp_problem_t *lp);
+void big_bcast_bytes(void **buffer_ptr, size_t *size_ptr, int root, MPI_Comm comm);
 #ifdef __cplusplus
 }
 #endif

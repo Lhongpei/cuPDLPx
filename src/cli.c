@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 #include "cupdlpx.h"
+#include "distributed_solver.h"
 #include "mps_parser.h"
 #include "presolve.h"
 #include "solver.h"
@@ -207,7 +208,7 @@ void print_usage(const char *prog_name)
                     "Disable presolve (default: enabled).\n");
 }
 
-int main(int argc, char *argv[])
+int run_pdlpx(int argc, char *argv[])
 {
     pdhg_parameters_t params;
     set_default_parameters(&params);
@@ -354,4 +355,203 @@ int main(int argc, char *argv[])
     free(instance_name);
 
     return 0;
+}
+
+int run_d_pdlpx(int argc, char *argv[])
+{
+    int mpi_initialized = 0;
+    MPI_Initialized(&mpi_initialized);
+    if (!mpi_initialized) {
+        MPI_Init(&argc, &argv);
+    }
+
+    int rank_global;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank_global);
+
+    pdhg_parameters_t params;
+    set_default_parameters(&params);
+
+    params.grid_shape.row_dims = 1;
+    params.grid_shape.col_dims = 1;
+
+    static struct option long_options[] = {
+        {"help", no_argument, 0, 'h'},
+        {"verbose", no_argument, 0, 'v'},
+        {"time_limit", required_argument, 0, 1001},
+        {"iter_limit", required_argument, 0, 1002},
+        {"eps_opt", required_argument, 0, 1003},
+        {"eps_feas", required_argument, 0, 1004},
+        {"eps_infeas_detect", required_argument, 0, 1005},
+        {"eps_feas_polish", required_argument, 0, 1006},
+        {"feasibility_polishing", no_argument, 0, 'f'},
+        {"l_inf_ruiz_iter", required_argument, 0, 1007},
+        {"pock_chambolle_alpha", required_argument, 0, 1008},
+        {"no_pock_chambolle", no_argument, 0, 1009},
+        {"no_bound_obj_rescaling", no_argument, 0, 1010},
+        {"sv_max_iter", required_argument, 0, 1011},
+        {"sv_tol", required_argument, 0, 1012},
+        {"eval_freq", required_argument, 0, 1013},
+        {"opt_norm", required_argument, 0, 1014},
+        {"no_presolve", no_argument, 0, 1015},
+        {"n_row_tiles", required_argument, 0, 2001},
+        {"n_col_tiles", required_argument, 0, 2002},
+        {0, 0, 0, 0}};
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "hvfp", long_options, NULL)) != -1)
+    {
+        switch (opt)
+        {
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        case 'v':
+            params.verbose = true;
+            break;
+        case 1001: // --time_limit
+            params.termination_criteria.time_sec_limit = atof(optarg);
+            break;
+        case 1002: // --iter_limit
+            params.termination_criteria.iteration_limit = atoi(optarg);
+            break;
+        case 1003: // --eps_optimal
+            params.termination_criteria.eps_optimal_relative = atof(optarg);
+            break;
+        case 1004: // --eps_feas
+            params.termination_criteria.eps_feasible_relative = atof(optarg);
+            break;
+        case 1005: // --eps_infeas_detect
+            params.termination_criteria.eps_infeasible = atof(optarg);
+            break;
+        case 1006: // --eps_feas_polish_relative
+            params.termination_criteria.eps_feas_polish_relative = atof(optarg);
+            break;
+        case 'f': // --feasibility_polishing
+            params.feasibility_polishing = true;
+            break;
+        case 1007: // --l_inf_ruiz_iter
+            params.l_inf_ruiz_iterations = atoi(optarg);
+            break;
+        case 1008: // --pock_chambolle_alpha
+            params.pock_chambolle_alpha = atof(optarg);
+            break;
+        case 1009: // --no_pock_chambolle
+            params.has_pock_chambolle_alpha = false;
+            break;
+        case 1010: // --no_bound_obj_rescaling
+            params.bound_objective_rescaling = false;
+            break;
+        case 1011: // --sv_max_iter
+            params.sv_max_iter = atoi(optarg);
+            break;
+        case 1012: // --sv_tol
+            params.sv_tol = atof(optarg);
+            break;
+        case 1013: // --eval_freq
+            params.termination_evaluation_frequency = atoi(optarg);
+            break;
+        case 1014: // --opt_norm
+            {
+                const char *norm_str = optarg;
+                if (strcmp(norm_str, "l2") == 0) {
+                    params.optimality_norm = NORM_TYPE_L2;
+                } else if (strcmp(norm_str, "linf") == 0) {
+                    params.optimality_norm = NORM_TYPE_L_INF;
+                } else {
+                    fprintf(stderr, "Error: opt_norm must be 'l2' or 'linf'\n");
+                    return 1;
+                }
+            }
+            break;
+        case 1015: // --no_presolve
+            params.presolve = false;
+            break;
+        case '?': // Unknown option
+            return 1;
+        case 2001: // --n_row_tiles
+            params.grid_shape.row_dims = atoi(optarg);
+            break;
+        case 2002: // --n_col_tiles
+            params.grid_shape.col_dims = atoi(optarg);
+            break;
+        }
+    }
+
+    if (argc - optind != 2)
+    {
+        if (rank_global == 0) {
+            fprintf(stderr, "Error: You must specify an input file and an output directory.\n");
+            print_usage(argv[0]);
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    const char *filename = argv[optind];
+    const char *output_dir = argv[optind + 1];
+
+    char *instance_name = extract_instance_name(filename);
+    if (instance_name == NULL) {
+        MPI_Finalize();
+        return 1;
+    }
+
+    // 2. Conditional Loading (Root Only)
+    lp_problem_t *problem = NULL;
+    
+    if (rank_global == 0) {
+        if (params.verbose) printf("Rank 0: Loading MPS file '%s'...\n", filename);
+        problem = read_mps_file(filename);
+
+        if (problem == NULL) {
+            fprintf(stderr, "Rank 0: Failed to read or parse the file.\n");
+            // In a real app, you should signal other ranks to abort here.
+            MPI_Abort(MPI_COMM_WORLD, 1);
+            return 1;
+        }
+    }
+
+    cupdlpx_result_t *result = distributed_optimize(&params, problem);
+
+    if (rank_global == 0)
+    {
+        if (result == NULL) {
+            fprintf(stderr, "Solver failed.\n");
+        } else {
+            if (params.verbose) printf("Rank 0: Saving results...\n");
+            save_solver_summary(result, output_dir, instance_name);
+            save_solution(result->primal_solution, result->num_variables, output_dir,
+                          instance_name, "_primal_solution.txt");
+            save_solution(result->dual_solution, result->num_constraints, output_dir,
+                          instance_name, "_dual_solution.txt");
+            cupdlpx_result_free(result);
+        }
+        if (problem) lp_problem_free(problem);
+    }
+    else {
+        if (result) cupdlpx_result_free(result);
+    }
+
+    free(instance_name);
+
+    MPI_Finalize();
+
+    return 0;
+}
+int is_running_under_mpi() {
+    if (getenv("OMPI_COMM_WORLD_RANK") != NULL) return 1;
+    if (getenv("PMI_RANK") != NULL) return 1;
+    if (getenv("PMI_SIZE") != NULL) return 1;
+    if (getenv("I_MPI_RANK") != NULL) return 1;
+    
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if (is_running_under_mpi()) {
+        return run_d_pdlpx(argc, argv);
+    } else {
+        return run_pdlpx(argc, argv);
+    }
 }

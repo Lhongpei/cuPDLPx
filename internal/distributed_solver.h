@@ -19,8 +19,7 @@ limitations under the License.
 #include "cupdlpx_types.h"
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
     cupdlpx_result_t *distributed_optimize(

@@ -139,6 +139,21 @@ extern "C"
 
     void set_default_parameters(pdhg_parameters_t *params);
 
+    __global__ void compute_residual_kernel(
+        double *primal_residual, const double *primal_product,
+        const double *constraint_lower_bound, const double *constraint_upper_bound,
+        const double *dual_solution, double *dual_residual,
+        const double *dual_product, const double *dual_slack,
+        const double *objective_vector, const double *constraint_rescaling,
+        const double *variable_rescaling, double *dual_obj_contribution,
+        const double *const_lb_finite, const double *const_ub_finite,
+        int num_constraints, int num_variables);
+
+    double get_vector_sum(cublasHandle_t handle, int n, double *ones_d,
+                             const double *x_d);
+    double get_vector_inf_norm(cublasHandle_t handle, int n,
+                                  const double *x_d);
+
 #ifdef __cplusplus
 }
 
