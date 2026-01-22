@@ -1,5 +1,6 @@
 #include "cupdlpx_types.h"
 #include "internal_types.h"
+#include "distribution_utils.h"
 #include "core_operation.h"
 #include "utils.h"
 #include <mpi.h>
@@ -8,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+
 #define NCCL_CHECK(cmd) do {                         \
   ncclResult_t r = cmd;                              \
   if (r != ncclSuccess) {                            \
@@ -17,6 +20,7 @@
   }                                                  \
 } while(0)
 
+extern "C" {
 ncclComm_t init_nccl(MPI_Comm mpi_comm) {
     ncclUniqueId id;
     ncclComm_t nccl_comm;
@@ -68,7 +72,7 @@ grid_context_t initialize_parallel_context(int P_row, int P_col) {
 
     return grid;
 }
-
+}
 int* get_balanced_cuts(const int* weights, int total_dim, int num_partitions) {
     int* cuts = (int*)malloc((num_partitions + 1) * sizeof(int));
     cuts[0] = 0; 
@@ -463,103 +467,129 @@ double compute_global_dot(cublasHandle_t blas_handle, int m_local, double *d_vec
     return global_dot;
 }
 
-double estimate_maximum_singular_value_distributed(
-    pdhg_solver_state_t *state, 
-    int max_iterations, 
-    double tolerance) 
+double estimate_maximum_singular_value_distributed(cusparseHandle_t sparse_handle,
+                                       cublasHandle_t blas_handle,
+                                       const grid_context_t *grid_context,
+                                       const cu_sparse_matrix_csr_t *A,
+                                       const cu_sparse_matrix_csr_t *AT,
+                                       int max_iterations, double tolerance)
 {
-    int m_local = state->num_constraints; 
-    int n_global = state->num_variables;  
-    MPI_Comm comm = state->grid_context->comm_global;
 
-    double *eigenvector_d, *next_eigenvector_d; 
-    double *dual_product_d;                    
-    
-    CUDA_CHECK(cudaMalloc((void**)&eigenvector_d, m_local * sizeof(double)));
-    CUDA_CHECK(cudaMalloc((void**)&next_eigenvector_d, m_local * sizeof(double)));
-    CUDA_CHECK(cudaMalloc((void**)&dual_product_d, n_global * sizeof(double)));
+    int m = A->num_rows;
+    int n = A->num_cols;
+    double *eigenvector_d, *next_eigenvector_d, *dual_product_d;
 
-    double *dual_product_h = (double*)malloc(n_global * sizeof(double));
-    if (!dual_product_h) {
-        fprintf(stderr, "Malloc failed for host buffer\n");
-        MPI_Abort(comm, 1);
-    }
+    CUDA_CHECK(cudaMalloc(&eigenvector_d, m * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&next_eigenvector_d, m * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&dual_product_d, n * sizeof(double)));
 
-    double *eigenvector_h = (double *)malloc(m_local * sizeof(double));
-    unsigned int seed = 1234 + state->grid_context->rank_global; 
-    for (int i = 0; i < m_local; ++i) {
+    double *eigenvector_h = (double *)safe_malloc(m * sizeof(double));
+    unsigned int seed = 1234 + grid_context->rank_global; 
+    for (int i = 0; i < m; ++i) {
         eigenvector_h[i] = (double)rand_r(&seed) / RAND_MAX;
     }
-    CUDA_CHECK(cudaMemcpy(eigenvector_d, eigenvector_h, m_local * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(eigenvector_d, eigenvector_h, m * sizeof(double),
+                          cudaMemcpyHostToDevice));
     free(eigenvector_h);
+
     double sigma_max_sq = 1.0;
     const double one = 1.0;
     const double zero = 0.0;
 
-    cusparseSpMatDescr_t matA = state->matA; 
-    cusparseSpMatDescr_t matAT = state->matAt;
+    cusparseSpMatDescr_t matA, matAT;
+    CUSPARSE_CHECK(cusparseCreateCsr(
+        &matA, A->num_rows, A->num_cols, A->num_nonzeros, A->row_ptr, A->col_ind,
+        A->val, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO,
+        CUDA_R_64F));
+    CUSPARSE_CHECK(cusparseCreateCsr(
+        &matAT, AT->num_rows, AT->num_cols, AT->num_nonzeros, AT->row_ptr,
+        AT->col_ind, AT->val, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+        CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F));
+
     cusparseDnVecDescr_t vecEigen, vecNextEigen, vecDual;
-    CUSPARSE_CHECK(cusparseCreateDnVec(&vecEigen, m_local, eigenvector_d, CUDA_R_64F));
-    CUSPARSE_CHECK(cusparseCreateDnVec(&vecNextEigen, m_local, next_eigenvector_d, CUDA_R_64F));
-    CUSPARSE_CHECK(cusparseCreateDnVec(&vecDual, n_global, dual_product_d, CUDA_R_64F));
+    CUSPARSE_CHECK(cusparseCreateDnVec(&vecEigen, m, eigenvector_d, CUDA_R_64F));
+    CUSPARSE_CHECK(
+        cusparseCreateDnVec(&vecNextEigen, m, next_eigenvector_d, CUDA_R_64F));
+    CUSPARSE_CHECK(cusparseCreateDnVec(&vecDual, n, dual_product_d, CUDA_R_64F));
 
     void *dBufferAT = NULL;
     void *dBufferA = NULL;
     size_t bufferSizeAT = 0, bufferSizeA = 0;
-
     CUSPARSE_CHECK(cusparseSpMV_bufferSize(
-        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matAT,
-        vecNextEigen, &zero, vecDual, CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, &bufferSizeAT));
+        sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matAT,
+        vecNextEigen, &zero, vecDual, CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2,
+        &bufferSizeAT));
     CUSPARSE_CHECK(cusparseSpMV_bufferSize(
-        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecDual,
+        sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecDual,
         &zero, vecEigen, CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, &bufferSizeA));
 
-    CUDA_CHECK(cudaMalloc((void**)&dBufferAT, bufferSizeAT));
-    CUDA_CHECK(cudaMalloc((void**)&dBufferA, bufferSizeA));
+    CUDA_CHECK(cudaMalloc(&dBufferAT, bufferSizeAT));
+    CUDA_CHECK(cudaMalloc(&dBufferA, bufferSizeA));
 
-
-    for (int i = 0; i < max_iterations; ++i) 
+    for (int i = 0; i < max_iterations; ++i)
     {
-        CUDA_CHECK(cudaMemcpy(next_eigenvector_d, eigenvector_d, m_local * sizeof(double), cudaMemcpyDeviceToDevice));
 
-        double norm = compute_global_norm(state->blas_handle, m_local, next_eigenvector_d, comm);
-        double inv_norm = 1.0 / norm;
-        CUBLAS_CHECK(cublasDscal(state->blas_handle, m_local, &inv_norm, next_eigenvector_d, 1));
+        CUDA_CHECK(cudaMemcpy(next_eigenvector_d, eigenvector_d, m * sizeof(double),
+                              cudaMemcpyDeviceToDevice));
+        double local_norm;
+        CUBLAS_CHECK(cublasDnrm2_v2_64(blas_handle, m, next_eigenvector_d, 1, &local_norm));
 
-        CUSPARSE_CHECK(cusparseSpMV(state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+        double local_norm_sq = local_norm * local_norm;
+        double global_norm_sq = 0.0;
+        MPI_Allreduce(&local_norm_sq, &global_norm_sq, 1, MPI_DOUBLE, MPI_SUM, grid_context->comm_global);
+        double global_norm = sqrt(global_norm_sq);
+
+        double inv_eigenvector_norm = 1.0 / global_norm;
+        CUBLAS_CHECK(cublasDscal(blas_handle, m, &inv_eigenvector_norm,
+                                 next_eigenvector_d, 1));
+
+        CUSPARSE_CHECK(cusparseSpMV(sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                     &one, matAT, vecNextEigen, &zero, vecDual,
                                     CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, dBufferAT));
-
-        CUDA_CHECK(cudaMemcpy(dual_product_h, dual_product_d, n_global * sizeof(double), cudaMemcpyDeviceToHost));
         
-        MPI_Allreduce(MPI_IN_PLACE, dual_product_h, n_global, MPI_DOUBLE, MPI_SUM, comm);
-       
-        CUDA_CHECK(cudaMemcpy(dual_product_d, dual_product_h, n_global * sizeof(double), cudaMemcpyHostToDevice));
+        NCCL_CHECK(ncclAllReduce(
+            (const void *)dual_product_d, 
+            (void *)dual_product_d,      
+            n,              
+            ncclDouble,                   
+            ncclSum,                         
+            grid_context->nccl_col,    
+            0                                
+        ));
 
-        CUSPARSE_CHECK(cusparseSpMV(state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_CHECK(cusparseSpMV(sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
                                     &one, matA, vecDual, &zero, vecEigen,
                                     CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, dBufferA));
 
-        sigma_max_sq = compute_global_dot(state->blas_handle, m_local, next_eigenvector_d, eigenvector_d, comm);
+        double local_dot;
+        CUBLAS_CHECK(cublasDdot(blas_handle, m, next_eigenvector_d, 1,
+                                eigenvector_d, 1, &local_dot));
+        
+        MPI_Allreduce(&local_dot, &sigma_max_sq, 1, MPI_DOUBLE, MPI_SUM, grid_context->comm_global);
 
         double neg_sigma_sq = -sigma_max_sq;
-        CUBLAS_CHECK(cublasDscal(state->blas_handle, m_local, &neg_sigma_sq, next_eigenvector_d, 1)); 
-        CUBLAS_CHECK(cublasDaxpy(state->blas_handle, m_local, &one, eigenvector_d, 1, next_eigenvector_d, 1)); 
+        CUBLAS_CHECK(
+            cublasDscal(blas_handle, m, &neg_sigma_sq, next_eigenvector_d, 1));
+        CUBLAS_CHECK(cublasDaxpy(blas_handle, m, &one, eigenvector_d, 1,
+                                 next_eigenvector_d, 1));
 
-        double residual_norm = compute_global_norm(state->blas_handle, m_local, next_eigenvector_d, comm);
-
-        if (residual_norm < tolerance) break;
+        double local_res_norm;
+        CUBLAS_CHECK(cublasDnrm2_v2_64(blas_handle, m, next_eigenvector_d, 1, &local_res_norm));
+        
+        double local_res_sq = local_res_norm * local_res_norm;
+        double global_res_sq = 0.0;
+        MPI_Allreduce(&local_res_sq, &global_res_sq, 1, MPI_DOUBLE, MPI_SUM, grid_context->comm_global);
+        
+        if (sqrt(global_res_sq) < tolerance) break;
     }
-
-    free(dual_product_h); 
 
     CUDA_CHECK(cudaFree(dBufferAT));
     CUDA_CHECK(cudaFree(dBufferA));
-    
+    CUSPARSE_CHECK(cusparseDestroySpMat(matA));
+    CUSPARSE_CHECK(cusparseDestroySpMat(matAT));
     CUSPARSE_CHECK(cusparseDestroyDnVec(vecEigen));
     CUSPARSE_CHECK(cusparseDestroyDnVec(vecNextEigen));
     CUSPARSE_CHECK(cusparseDestroyDnVec(vecDual));
-    
     CUDA_CHECK(cudaFree(eigenvector_d));
     CUDA_CHECK(cudaFree(next_eigenvector_d));
     CUDA_CHECK(cudaFree(dual_product_d));
@@ -567,19 +597,26 @@ double estimate_maximum_singular_value_distributed(
     return sqrt(sigma_max_sq);
 }
 
-// Wrapper Function
 void initialize_step_size_and_primal_weight_distributed(
     pdhg_solver_state_t *state,
     const pdhg_parameters_t *params)
 {
-    if (state->constraint_matrix->num_nonzeros == 0)
+    long long local_nnz = state->constraint_matrix->num_nonzeros;
+    long long global_nnz = 0;
+    
+    MPI_Allreduce(&local_nnz, &global_nnz, 1, MPI_LONG_LONG, MPI_SUM, state->grid_context->comm_global);
+
+    if (global_nnz == 0)
     {
         state->step_size = 1.0;
     }
     else
     {
-        double max_sv = estimate_maximum_singular_value_distributed(state, params->sv_max_iter, params->sv_tol);
+        double max_sv = estimate_maximum_singular_value_distributed(
+            state->sparse_handle, state->blas_handle, state->grid_context, state->constraint_matrix,
+            state->constraint_matrix_t, params->sv_max_iter, params->sv_tol);
         MPI_Barrier(state->grid_context->comm_global);
+        
         if (max_sv < 1e-9) max_sv = 1e-9;
         state->step_size = 0.998 / max_sv;
     }

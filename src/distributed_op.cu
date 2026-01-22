@@ -31,13 +31,13 @@ void compute_next_pdhg_primal_solution_distributed(pdhg_solver_state_t *state)
         CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->dual_spmv_buffer));
 
     NCCL_CHECK(ncclAllReduce(
-        (const void *)state->dual_product, // Send Buffer (In-place)
-        (void *)state->dual_product,       // Recv Buffer
-        state->num_variables,              // Count (注意是 num_variables)
-        ncclDouble,                        // Type
-        ncclSum,                           // Op
-        state->grid_context->nccl_col,     // Comm: Vertical (Sum over rows)
-        0                                  // Stream (通常用默认流或 state绑定的流)
+        (const void *)state->dual_product, 
+        (void *)state->dual_product,      
+        state->num_variables,              
+        ncclDouble,                   
+        ncclSum,                         
+        state->grid_context->nccl_col,    
+        0                                
     ));
 
     double step = state->step_size / state->primal_weight;
@@ -78,13 +78,13 @@ void compute_next_pdhg_dual_solution_distributed(pdhg_solver_state_t *state)
         CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->primal_spmv_buffer));
 
     NCCL_CHECK(ncclAllReduce(
-        (const void *)state->primal_product, // Send Buffer
-        (void *)state->primal_product,       // Recv Buffer
-        state->num_constraints,              // Count (注意是 num_constraints)
-        ncclDouble,                          // Type
-        ncclSum,                             // Op
-        state->grid_context->nccl_row,       // Comm: Horizontal (Sum over cols)
-        0                                    // Stream
+        (const void *)state->primal_product, 
+        (void *)state->primal_product,
+        state->num_constraints,
+        ncclDouble,
+        ncclSum,
+        state->grid_context->nccl_row,
+        0
     ));
 
     double step = state->step_size * state->primal_weight;

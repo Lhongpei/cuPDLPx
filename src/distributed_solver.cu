@@ -61,6 +61,8 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
     rescale_info_t *rescale_info = NULL;
     cupdlpx_presolve_info_t *presolve_info = NULL;
 
+    int is_solved_during_presolve = 0;
+
     if (grid_context->rank_global == 0) 
     {
         if (params->presolve)
@@ -68,17 +70,33 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
             presolve_info = pslp_presolve(original_problem, params);
             if (presolve_info->problem_solved_during_presolve)
             {
-                //TODO: Deal with cases that solved during presolve
-                cupdlpx_result_t *result = create_result_from_presolve(presolve_info, original_problem);
-                cupdlpx_presolve_info_free(presolve_info);
-                pdhg_final_log(result, params);
-                return result;
+                is_solved_during_presolve = 1;
             }
-            working_problem = presolve_info->reduced_problem;
+            else
+            {
+                working_problem = presolve_info->reduced_problem;
+            }
         }
-        rescale_info = rescale_problem(params, working_problem);
+        
+        if (!is_solved_during_presolve) {
+             rescale_info = rescale_problem(params, working_problem);
+        }
     }
-    if (params->verbose) printf("Rank 0: Preprocess Complete!\n");
+
+    MPI_Bcast(&is_solved_during_presolve, 1, MPI_INT, 0, grid_context->comm_global);
+
+    if (is_solved_during_presolve)
+    {
+        if (grid_context->rank_global == 0) {
+            cupdlpx_result_t *result = create_result_from_presolve(presolve_info, original_problem);
+            if (presolve_info) cupdlpx_presolve_info_free(presolve_info);
+            pdhg_final_log(result, params);
+            return result;
+        } else {
+            return NULL; 
+        }
+    }
+
     
     {
         char *buf = NULL;
@@ -100,7 +118,6 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
 
         if (buf) free(buf);
     }
-    if (params->verbose) printf("Rank 0: Synchronize Problem!\n");
     {
         char *buf = NULL;
         size_t sz = 0;
@@ -119,7 +136,6 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
 
         if (buf) free(buf);
     }
-    if (params->verbose) printf("Rank 0: Synchronize Rescaling Info!\n");
     int n_start = 0;
     int m_start = 0;
     rescale_info_t *local_rescale_info = partition_rescale_info(
@@ -130,7 +146,6 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
         &m_start  
     );
     rescale_info_free(rescale_info);
-    if (params->verbose) printf("Rank 0: Rescaling Info Partitioned!\n");
     lp_problem_t *local_working_problem = partition_lp_problem(
         working_problem,
         grid_context,
@@ -138,7 +153,6 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
         &n_start,  
         &m_start  
     );
-    if (params->verbose) printf("Rank 0: Problem Partitioned!\n");
     pdhg_solver_state_t *state = initialize_solver_state(params, local_working_problem, local_rescale_info);
     state->grid_context = grid_context;
     allreduce_obj_bound_norm(state, params);
@@ -147,9 +161,9 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
     rescale_info_free(local_rescale_info);
 
     //TODO: Support distributed Power Method> Current Version has Bugs
-    // initialize_step_size_and_primal_weight_distributed(state, params);
-    state->step_size = 1.0;
-    state->primal_weight = 1.0;
+    initialize_step_size_and_primal_weight_distributed(state, params);
+    // state->step_size = 1.0;
+    // state->primal_weight = 1.0;
 
     // Warm Up Distributed Environment
     compute_residual_distributed(state, params->optimality_norm);
@@ -302,13 +316,13 @@ cupdlpx_result_t *create_result_from_state_distributed(pdhg_solver_state_t *stat
     gather_distributed_vector(
         state->pdhg_primal_solution, 
         state->num_variables, 
-        state->grid_context->comm_col, // Check Comm
-        state->grid_context->comm_row, // Gather Comm
+        state->grid_context->comm_col, 
+        state->grid_context->comm_row,
         &global_primal
     );
 
     gather_distributed_vector(
-        state->dual_slack, // Reduced cost 存在 dual_slack 里
+        state->dual_slack, 
         state->num_variables, 
         state->grid_context->comm_col, 
         state->grid_context->comm_row, 
