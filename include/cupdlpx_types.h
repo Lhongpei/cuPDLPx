@@ -102,7 +102,8 @@ extern "C"
 	{
 		int row_dims;
 		int col_dims;
-	} grid_shape_t;
+		bool decided;
+	} grid_size_t;
 
 	typedef struct
 	{
@@ -122,7 +123,7 @@ extern "C"
 		bool presolve;
 		partition_method_t partition_method;
 		permute_method_t permute_method;
-		grid_shape_t grid_shape;
+		grid_size_t grid_size;
 	} pdhg_parameters_t;
 
 	typedef struct

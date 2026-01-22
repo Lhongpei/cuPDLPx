@@ -351,6 +351,8 @@ void set_default_parameters(pdhg_parameters_t *params)
 
     params->optimality_norm = NORM_TYPE_L2;
     params->presolve = true;
+
+    params->grid_size.decided = false;
 }
 
 #define PRINT_DIFF_INT(name, current, default_val) \

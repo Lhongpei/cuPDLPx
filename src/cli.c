@@ -367,12 +367,15 @@ int run_d_pdlpx(int argc, char *argv[])
 
     int rank_global;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_global);
+    int world_size;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
     pdhg_parameters_t params;
     set_default_parameters(&params);
 
-    params.grid_shape.row_dims = 1;
-    params.grid_shape.col_dims = 1;
+    params.grid_size.row_dims = 0; 
+    params.grid_size.col_dims = 0;
+    params.grid_size.decided = false; 
 
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
@@ -393,17 +396,18 @@ int run_d_pdlpx(int argc, char *argv[])
         {"eval_freq", required_argument, 0, 1013},
         {"opt_norm", required_argument, 0, 1014},
         {"no_presolve", no_argument, 0, 1015},
-        {"n_row_tiles", required_argument, 0, 2001},
-        {"n_col_tiles", required_argument, 0, 2002},
+        {"grid_size",   required_argument, 0, 2001},
         {0, 0, 0, 0}};
 
+    // 3. Argument Parsing
     int opt;
     while ((opt = getopt_long(argc, argv, "hvfp", long_options, NULL)) != -1)
     {
         switch (opt)
         {
         case 'h':
-            print_usage(argv[0]);
+            if (rank_global == 0) print_usage(argv[0]);
+            MPI_Finalize();
             return 0;
         case 'v':
             params.verbose = true;
@@ -458,8 +462,8 @@ int run_d_pdlpx(int argc, char *argv[])
                 } else if (strcmp(norm_str, "linf") == 0) {
                     params.optimality_norm = NORM_TYPE_L_INF;
                 } else {
-                    fprintf(stderr, "Error: opt_norm must be 'l2' or 'linf'\n");
-                    return 1;
+                    if (rank_global == 0) fprintf(stderr, "Error: opt_norm must be 'l2' or 'linf'\n");
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
                 }
             }
             break;
@@ -467,13 +471,38 @@ int run_d_pdlpx(int argc, char *argv[])
             params.presolve = false;
             break;
         case '?': // Unknown option
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
-        case 2001: // --n_row_tiles
-            params.grid_shape.row_dims = atoi(optarg);
+        case 2001: // --grid_size r,c
+        {
+            int r, c;
+            if (sscanf(optarg, "%d,%d", &r, &c) == 2) {
+                if (r > 0 && c > 0) {
+                    if (r * c != world_size) {
+                        if (rank_global == 0) {
+                            fprintf(stderr, "\n[FATAL ERROR] MPI Grid Configuration Mismatch\n");
+                            fprintf(stderr, "==============================================\n");
+                            fprintf(stderr, "Command line input : --grid_size %s (Total: %d)\n", optarg, r * c);
+                            fprintf(stderr, "MPI Runtime size   : -n %d\n", world_size);
+                            fprintf(stderr, "Reason             : r * c must equal the number of MPI processes.\n");
+                            fprintf(stderr, "==============================================\n\n");
+                        }
+                        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                    }
+                    
+                    params.grid_size.row_dims = r;
+                    params.grid_size.col_dims = c;
+                    params.grid_size.decided = true;
+                } else {
+                    if (rank_global == 0) fprintf(stderr, "Error: Grid dimensions must be positive integers. Got: %s\n", optarg);
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                }
+            } else {
+                if (rank_global == 0) fprintf(stderr, "Error: Invalid grid_size format. Use --grid_size r,c (e.g., --grid_size 2,2)\n");
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+            }
             break;
-        case 2002: // --n_col_tiles
-            params.grid_shape.col_dims = atoi(optarg);
-            break;
+        }
         }
     }
 
@@ -483,7 +512,7 @@ int run_d_pdlpx(int argc, char *argv[])
             fprintf(stderr, "Error: You must specify an input file and an output directory.\n");
             print_usage(argv[0]);
         }
-        MPI_Finalize();
+        MPI_Finalize(); 
         return 1;
     }
 
@@ -492,11 +521,11 @@ int run_d_pdlpx(int argc, char *argv[])
 
     char *instance_name = extract_instance_name(filename);
     if (instance_name == NULL) {
-        MPI_Finalize();
+        if (rank_global == 0) fprintf(stderr, "Error: Could not extract instance name from filename.\n");
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         return 1;
     }
 
-    // 2. Conditional Loading (Root Only)
     lp_problem_t *problem = NULL;
     
     if (rank_global == 0) {
@@ -505,8 +534,7 @@ int run_d_pdlpx(int argc, char *argv[])
 
         if (problem == NULL) {
             fprintf(stderr, "Rank 0: Failed to read or parse the file.\n");
-            // In a real app, you should signal other ranks to abort here.
-            MPI_Abort(MPI_COMM_WORLD, 1);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             return 1;
         }
     }
@@ -516,7 +544,7 @@ int run_d_pdlpx(int argc, char *argv[])
     if (rank_global == 0)
     {
         if (result == NULL) {
-            fprintf(stderr, "Solver failed.\n");
+            fprintf(stderr, "Solver failed (returned NULL result).\n");
         } else {
             if (params.verbose) printf("Rank 0: Saving results...\n");
             save_solver_summary(result, output_dir, instance_name);
@@ -538,6 +566,7 @@ int run_d_pdlpx(int argc, char *argv[])
 
     return 0;
 }
+
 int is_running_under_mpi() {
     if (getenv("OMPI_COMM_WORLD_RANK") != NULL) return 1;
     if (getenv("PMI_RANK") != NULL) return 1;
