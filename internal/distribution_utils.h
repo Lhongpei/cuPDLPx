@@ -38,6 +38,16 @@ lp_problem_t* deserialize_lp_problem_from_ptr(const char **ptr_ref);
 void serialize_lp_problem_to_ptr(const lp_problem_t *lp, char **ptr_ref);
 size_t get_lp_problem_size(const lp_problem_t *lp);
 void big_bcast_bytes(void **buffer_ptr, size_t *size_ptr, int root, MPI_Comm comm);
+void initialize_step_size_and_primal_weight_distributed(
+    pdhg_solver_state_t *state,
+    const pdhg_parameters_t *params);
+void gather_distributed_vector(
+    double *d_local_vec,
+    int local_len,
+    MPI_Comm comm_check, 
+    MPI_Comm comm_gather,
+    double **result_ptr
+);
 #ifdef __cplusplus
 }
 #endif

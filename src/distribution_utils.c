@@ -1,20 +1,13 @@
 #include "cupdlpx_types.h"
 #include "internal_types.h"
+#include "core_operation.h"
+#include "utils.h"
 #include <mpi.h>
 #include <nccl.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define CUDA_CHECK(cmd) do {                         \
-  cudaError_t e = cmd;                               \
-  if( e != cudaSuccess ) {                           \
-    printf("Cuda failure %s:%d '%s'\n",              \
-        __FILE__, __LINE__, cudaGetErrorString(e));  \
-    exit(EXIT_FAILURE);                              \
-  }                                                  \
-} while(0)
-
 #define NCCL_CHECK(cmd) do {                         \
   ncclResult_t r = cmd;                              \
   if (r != ncclSuccess) {                            \
@@ -108,7 +101,6 @@ int* get_balanced_cuts(const int* weights, int total_dim, int num_partitions) {
     return cuts;
 }
 
-//TODO: Add Assert to guarantee legal accessing.
 void csr_extract_submatrix(
     int n_total, int m_total, 
     const int* A_row_ptr, const int* A_col_ind, const double* A_val,
@@ -116,6 +108,8 @@ void csr_extract_submatrix(
     int col_start, int col_end,
     int** sub_row_ptr, int** sub_col_ind, double** sub_val, int* sub_nnz
 ) {
+    if(n_total <= 0 || m_total <=0)
+        return;
     int m_sub = row_end - row_start;
     
     int nnz_count = 0;
@@ -287,19 +281,15 @@ size_t get_lp_problem_size(const lp_problem_t *lp) {
     if (!lp) return 0;
     size_t size = 0;
 
-    // 基础标量
     size += sizeof(int) * 3 + sizeof(double); 
 
-    // 核心数组 (Variables & Constraints)
-    size += sizeof(double) * lp->num_variables * 3; // obj, lb, ub
-    size += sizeof(double) * lp->num_constraints * 2; // lb, ub
+    size += sizeof(double) * lp->num_variables * 3; 
+    size += sizeof(double) * lp->num_constraints * 2; 
 
-    // CSR Matrix
     size += sizeof(int) * (lp->num_constraints + 1);
     size += sizeof(int) * lp->constraint_matrix_num_nonzeros;
     size += sizeof(double) * lp->constraint_matrix_num_nonzeros;
 
-    // 可选数组标志
     size += sizeof(int) * 2; 
 
     if (lp->primal_start) size += sizeof(double) * lp->num_variables;
@@ -337,7 +327,7 @@ void serialize_lp_problem_to_ptr(const lp_problem_t *lp, char **ptr_ref) {
     if (has_primal) S_ARR(lp->primal_start, lp->num_variables, double);
     if (has_dual)   S_ARR(lp->dual_start, lp->num_constraints, double);
 
-    *ptr_ref = ptr; // 更新指针位置
+    *ptr_ref = ptr; 
 }
 
 lp_problem_t* deserialize_lp_problem_from_ptr(const char **ptr_ref) {
@@ -373,27 +363,19 @@ lp_problem_t* deserialize_lp_problem_from_ptr(const char **ptr_ref) {
     if (has_primal) D_ARR(lp->primal_start, lp->num_variables, double);
     if (has_dual)   D_ARR(lp->dual_start, lp->num_constraints, double);
 
-    *ptr_ref = ptr; // 更新指针位置
+    *ptr_ref = ptr;
     return lp;
 }
 
-// =========================================================================
-// 2. Rescale Info 序列化 (包含嵌套的 LP)
-// =========================================================================
 
 size_t get_rescale_info_size(const rescale_info_t *info) {
     if (!info) return 0;
     size_t size = 0;
-    // 标量
     size += sizeof(double) * 3; 
-    // 缩放向量
-    // 注意：这里我们假设 info->scaled_problem 已经存在，可以获取维度
-    // 如果 info->scaled_problem 为空，这里会崩溃，需要注意判空
     int n = info->scaled_problem->num_variables;
     int m = info->scaled_problem->num_constraints;
     size += sizeof(double) * (n + m);
 
-    // 【嵌套】加上内部 LP Problem 的大小
     size += get_lp_problem_size(info->scaled_problem);
     
     return size;
@@ -402,16 +384,12 @@ size_t get_rescale_info_size(const rescale_info_t *info) {
 void serialize_rescale_info(const rescale_info_t *info, char *buffer) {
     char *ptr = buffer;
     
-    // 1. 标量
     S_COPY(info->con_bound_rescale, double);
     S_COPY(info->obj_vec_rescale, double);
     S_COPY(info->rescaling_time_sec, double);
 
-    // 2. 嵌套的 Scaled LP Problem
-    // 我们直接调用上面的辅助函数，它会把 LP 写进去并移动 ptr
     serialize_lp_problem_to_ptr(info->scaled_problem, &ptr);
 
-    // 3. 缩放向量 (利用 scaled_problem 的维度)
     int n = info->scaled_problem->num_variables;
     int m = info->scaled_problem->num_constraints;
     S_ARR(info->var_rescale, n, double);
@@ -422,16 +400,12 @@ rescale_info_t* deserialize_rescale_info(const char *buffer) {
     const char *ptr = buffer;
     rescale_info_t *info = (rescale_info_t*)calloc(1, sizeof(rescale_info_t));
 
-    // 1. 标量
     D_VAL(info->con_bound_rescale, double);
     D_VAL(info->obj_vec_rescale, double);
     D_VAL(info->rescaling_time_sec, double);
 
-    // 2. 嵌套的 Scaled LP Problem
-    // 这里的 ptr 会被 deserialize_lp_problem_from_ptr 自动向后移动
     info->scaled_problem = deserialize_lp_problem_from_ptr(&ptr);
 
-    // 3. 缩放向量
     int n = info->scaled_problem->num_variables;
     int m = info->scaled_problem->num_constraints;
     D_ARR(info->var_rescale, n, double);
@@ -441,15 +415,12 @@ rescale_info_t* deserialize_rescale_info(const char *buffer) {
 }
 
 #define CHUNK_SIZE (1024 * 1024 * 1024) 
-// --------------------------------------------------------------------------
-// BIG BCAST Function
-// --------------------------------------------------------------------------
+
 void big_bcast_bytes(void **buffer_ptr, size_t *size_ptr, int root, MPI_Comm comm) {
     int rank;
     MPI_Comm_rank(comm, &rank);
     int is_root = (rank == root);
 
-    // 1. Broadcast the Total Size (use MPI_UNSIGNED_LONG_LONG for size_t)
     unsigned long long total_len = is_root ? *size_ptr : 0;
     MPI_Bcast(&total_len, 1, MPI_UNSIGNED_LONG_LONG, root, comm);
 
@@ -458,7 +429,6 @@ void big_bcast_bytes(void **buffer_ptr, size_t *size_ptr, int root, MPI_Comm com
         *buffer_ptr = malloc(total_len);
     }
 
-    // 2. Loop and Broadcast in Chunks
     char *buf = (char *)(*buffer_ptr);
     size_t offset = 0;
     
@@ -466,9 +436,215 @@ void big_bcast_bytes(void **buffer_ptr, size_t *size_ptr, int root, MPI_Comm com
         size_t remaining = total_len - offset;
         int current_chunk = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : (int)remaining;
 
-        // Use MPI_BYTE for raw data
         MPI_Bcast(buf + offset, current_chunk, MPI_BYTE, root, comm);
         
         offset += current_chunk;
+    }
+}
+
+double compute_global_norm(cublasHandle_t blas_handle, int m_local, double *d_vec, MPI_Comm comm) {
+    double local_norm_sq = 0.0;
+    double global_norm_sq = 0.0;
+    
+    CUBLAS_CHECK(cublasDdot(blas_handle, m_local, d_vec, 1, d_vec, 1, &local_norm_sq));
+    
+    MPI_Allreduce(&local_norm_sq, &global_norm_sq, 1, MPI_DOUBLE, MPI_SUM, comm);
+    
+    return sqrt(global_norm_sq);
+}
+
+double compute_global_dot(cublasHandle_t blas_handle, int m_local, double *d_vec1, double *d_vec2, MPI_Comm comm) {
+    double local_dot = 0.0;
+    double global_dot = 0.0;
+
+    CUBLAS_CHECK(cublasDdot(blas_handle, m_local, d_vec1, 1, d_vec2, 1, &local_dot));
+    MPI_Allreduce(&local_dot, &global_dot, 1, MPI_DOUBLE, MPI_SUM, comm);
+    
+    return global_dot;
+}
+
+double estimate_maximum_singular_value_distributed(
+    pdhg_solver_state_t *state, 
+    int max_iterations, 
+    double tolerance) 
+{
+    int m_local = state->num_constraints; 
+    int n_global = state->num_variables;  
+    MPI_Comm comm = state->grid_context->comm_global;
+
+    double *eigenvector_d, *next_eigenvector_d; 
+    double *dual_product_d;                    
+    
+    CUDA_CHECK(cudaMalloc((void**)&eigenvector_d, m_local * sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&next_eigenvector_d, m_local * sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&dual_product_d, n_global * sizeof(double)));
+
+    double *dual_product_h = (double*)malloc(n_global * sizeof(double));
+    if (!dual_product_h) {
+        fprintf(stderr, "Malloc failed for host buffer\n");
+        MPI_Abort(comm, 1);
+    }
+
+    double *eigenvector_h = (double *)malloc(m_local * sizeof(double));
+    unsigned int seed = 1234 + state->grid_context->rank_global; 
+    for (int i = 0; i < m_local; ++i) {
+        eigenvector_h[i] = (double)rand_r(&seed) / RAND_MAX;
+    }
+    CUDA_CHECK(cudaMemcpy(eigenvector_d, eigenvector_h, m_local * sizeof(double), cudaMemcpyHostToDevice));
+    free(eigenvector_h);
+    double sigma_max_sq = 1.0;
+    const double one = 1.0;
+    const double zero = 0.0;
+
+    cusparseSpMatDescr_t matA = state->matA; 
+    cusparseSpMatDescr_t matAT = state->matAt;
+    cusparseDnVecDescr_t vecEigen, vecNextEigen, vecDual;
+    CUSPARSE_CHECK(cusparseCreateDnVec(&vecEigen, m_local, eigenvector_d, CUDA_R_64F));
+    CUSPARSE_CHECK(cusparseCreateDnVec(&vecNextEigen, m_local, next_eigenvector_d, CUDA_R_64F));
+    CUSPARSE_CHECK(cusparseCreateDnVec(&vecDual, n_global, dual_product_d, CUDA_R_64F));
+
+    void *dBufferAT = NULL;
+    void *dBufferA = NULL;
+    size_t bufferSizeAT = 0, bufferSizeA = 0;
+
+    CUSPARSE_CHECK(cusparseSpMV_bufferSize(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matAT,
+        vecNextEigen, &zero, vecDual, CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, &bufferSizeAT));
+    CUSPARSE_CHECK(cusparseSpMV_bufferSize(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, matA, vecDual,
+        &zero, vecEigen, CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, &bufferSizeA));
+
+    CUDA_CHECK(cudaMalloc((void**)&dBufferAT, bufferSizeAT));
+    CUDA_CHECK(cudaMalloc((void**)&dBufferA, bufferSizeA));
+
+
+    for (int i = 0; i < max_iterations; ++i) 
+    {
+        CUDA_CHECK(cudaMemcpy(next_eigenvector_d, eigenvector_d, m_local * sizeof(double), cudaMemcpyDeviceToDevice));
+
+        double norm = compute_global_norm(state->blas_handle, m_local, next_eigenvector_d, comm);
+        double inv_norm = 1.0 / norm;
+        CUBLAS_CHECK(cublasDscal(state->blas_handle, m_local, &inv_norm, next_eigenvector_d, 1));
+
+        CUSPARSE_CHECK(cusparseSpMV(state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &one, matAT, vecNextEigen, &zero, vecDual,
+                                    CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, dBufferAT));
+
+        CUDA_CHECK(cudaMemcpy(dual_product_h, dual_product_d, n_global * sizeof(double), cudaMemcpyDeviceToHost));
+        
+        MPI_Allreduce(MPI_IN_PLACE, dual_product_h, n_global, MPI_DOUBLE, MPI_SUM, comm);
+       
+        CUDA_CHECK(cudaMemcpy(dual_product_d, dual_product_h, n_global * sizeof(double), cudaMemcpyHostToDevice));
+
+        CUSPARSE_CHECK(cusparseSpMV(state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                    &one, matA, vecDual, &zero, vecEigen,
+                                    CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, dBufferA));
+
+        sigma_max_sq = compute_global_dot(state->blas_handle, m_local, next_eigenvector_d, eigenvector_d, comm);
+
+        double neg_sigma_sq = -sigma_max_sq;
+        CUBLAS_CHECK(cublasDscal(state->blas_handle, m_local, &neg_sigma_sq, next_eigenvector_d, 1)); 
+        CUBLAS_CHECK(cublasDaxpy(state->blas_handle, m_local, &one, eigenvector_d, 1, next_eigenvector_d, 1)); 
+
+        double residual_norm = compute_global_norm(state->blas_handle, m_local, next_eigenvector_d, comm);
+
+        if (residual_norm < tolerance) break;
+    }
+
+    free(dual_product_h); 
+
+    CUDA_CHECK(cudaFree(dBufferAT));
+    CUDA_CHECK(cudaFree(dBufferA));
+    
+    CUSPARSE_CHECK(cusparseDestroyDnVec(vecEigen));
+    CUSPARSE_CHECK(cusparseDestroyDnVec(vecNextEigen));
+    CUSPARSE_CHECK(cusparseDestroyDnVec(vecDual));
+    
+    CUDA_CHECK(cudaFree(eigenvector_d));
+    CUDA_CHECK(cudaFree(next_eigenvector_d));
+    CUDA_CHECK(cudaFree(dual_product_d));
+
+    return sqrt(sigma_max_sq);
+}
+
+// Wrapper Function
+void initialize_step_size_and_primal_weight_distributed(
+    pdhg_solver_state_t *state,
+    const pdhg_parameters_t *params)
+{
+    if (state->constraint_matrix->num_nonzeros == 0)
+    {
+        state->step_size = 1.0;
+    }
+    else
+    {
+        double max_sv = estimate_maximum_singular_value_distributed(state, params->sv_max_iter, params->sv_tol);
+        MPI_Barrier(state->grid_context->comm_global);
+        if (max_sv < 1e-9) max_sv = 1e-9;
+        state->step_size = 0.998 / max_sv;
+    }
+
+    if (params->bound_objective_rescaling)
+    {
+        state->primal_weight = 1.0;
+    }
+    else
+    {
+        state->primal_weight = (state->objective_vector_norm + 1.0) /
+                               (state->constraint_bound_norm + 1.0);
+    }
+    state->best_primal_weight = state->primal_weight;
+}
+
+void gather_distributed_vector(
+    double *d_local_vec,
+    int local_len,
+    MPI_Comm comm_check, 
+    MPI_Comm comm_gather,
+    double **result_ptr
+) {
+    int rank_check;
+    MPI_Comm_rank(comm_check, &rank_check);
+
+    if (rank_check == 0) {
+        double *h_local = (double*)malloc(local_len * sizeof(double));
+        CUDA_CHECK(cudaMemcpy(h_local, d_local_vec, local_len * sizeof(double), cudaMemcpyDeviceToHost));
+
+        int size_gather, rank_gather;
+        MPI_Comm_size(comm_gather, &size_gather);
+        MPI_Comm_rank(comm_gather, &rank_gather);
+
+        int *counts = NULL;
+        int *displs = NULL;
+        double *h_global = NULL;
+
+        if (rank_gather == 0) {
+            counts = (int*)malloc(size_gather * sizeof(int));
+            displs = (int*)malloc(size_gather * sizeof(int));
+        }
+
+        MPI_Gather(&local_len, 1, MPI_INT, counts, 1, MPI_INT, 0, comm_gather);
+
+        if (rank_gather == 0) {
+            int total_len = 0;
+            for(int i=0; i<size_gather; ++i) {
+                displs[i] = total_len;
+                total_len += counts[i];
+            }
+            h_global = (double*)malloc(total_len * sizeof(double));
+        }
+        MPI_Gatherv(h_local, local_len, MPI_DOUBLE, 
+                    h_global, counts, displs, MPI_DOUBLE, 
+                    0, comm_gather);
+
+        free(h_local);
+        if (counts) free(counts);
+        if (displs) free(displs);
+
+        if (rank_gather == 0 && result_ptr != NULL) {
+            *result_ptr = h_global; 
+        } else if (h_global) {
+             free(h_global);
+        }
     }
 }

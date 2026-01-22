@@ -34,7 +34,7 @@ limitations under the License.
 #include <mpi.h>
 
 static void allreduce_obj_bound_norm(pdhg_solver_state_t *state, const pdhg_parameters_t *params);
-
+cupdlpx_result_t *create_result_from_state_distributed(pdhg_solver_state_t *state, const lp_problem_t *original_problem);
 static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *params,
                             const lp_problem_t *original_problem,
                             grid_context_t *grid_context);
@@ -146,12 +146,16 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
 
     rescale_info_free(local_rescale_info);
 
-    //TODO: Support distributed Power Method
-    // initialize_step_size_and_primal_weight(state, params);
+    //TODO: Support distributed Power Method> Current Version has Bugs
+    // initialize_step_size_and_primal_weight_distributed(state, params);
     state->step_size = 1.0;
     state->primal_weight = 1.0;
+
+    // Warm Up Distributed Environment
+    compute_residual_distributed(state, params->optimality_norm);
+    MPI_Barrier(grid_context->comm_global);
     
-    clock_t start_time = clock();
+    double start_time = MPI_Wtime();
     bool do_restart = false;
     while (state->total_count < params->termination_criteria.iteration_limit)
     {
@@ -166,7 +170,7 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
             }
 
             state->cumulative_time_sec =
-                (double)(clock() - start_time) / CLOCKS_PER_SEC;
+                (double)(MPI_Wtime() - start_time);
 
             check_termination_criteria(state, &params->termination_criteria);
             display_iteration_stats(state, params->verbose);
@@ -212,16 +216,17 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
         compute_residual(state, params->optimality_norm);
         display_iteration_stats(state, params->verbose);
     }
-
-    cupdlpx_result_t *result = create_result_from_state(state, original_problem);
-
-    if (params->presolve && presolve_info)
+    cupdlpx_result_t *result = NULL;
+    result = create_result_from_state_distributed(state, original_problem);
+    if (grid_context->rank_global == 0) 
     {
-        pslp_postsolve(presolve_info, result, original_problem);
-        cupdlpx_presolve_info_free(presolve_info);
+        if (params->presolve && presolve_info)
+        {
+            pslp_postsolve(presolve_info, result, original_problem);
+            cupdlpx_presolve_info_free(presolve_info);
+        }
+        pdhg_final_log(result, params);
     }
-
-    pdhg_final_log(result, params);
     pdhg_solver_state_free(state);
     return result;
 }
@@ -250,4 +255,110 @@ static void allreduce_obj_bound_norm(pdhg_solver_state_t *state, const pdhg_para
                       state->grid_context->comm_col);
         state->constraint_bound_norm = sqrt(global_sq);
     }
+}
+
+
+cupdlpx_result_t *create_result_from_state_distributed(pdhg_solver_state_t *state, const lp_problem_t *original_problem)
+{
+    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_sol, state->pdhg_dual_solution));
+    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product));
+    
+    CUSPARSE_CHECK(cusparseSpMV(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
+        state->matAt, state->vec_dual_sol, &HOST_ZERO, state->vec_dual_prod,
+        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->dual_spmv_buffer));
+
+    NCCL_CHECK(ncclAllReduce(
+        (const void *)state->dual_product, 
+        (void *)state->dual_product,      
+        state->num_variables,             
+        ncclDouble,                        
+        ncclSum,                      
+        state->grid_context->nccl_col,   
+        0                                 
+    ));
+
+    compute_and_rescale_reduced_cost_kernel<<<state->num_blocks_primal, THREADS_PER_BLOCK>>>(
+        state->dual_slack,
+        state->objective_vector,
+        state->dual_product,
+        state->variable_rescaling,
+        state->objective_vector_rescaling,
+        state->constraint_bound_rescaling,
+        state->num_variables);
+
+    rescale_solution(state);
+    
+    cupdlpx_result_t *results = NULL;
+    
+    if (state->grid_context->rank_global == 0) {
+        results = (cupdlpx_result_t *)safe_calloc(1, sizeof(cupdlpx_result_t));
+    }
+
+    double *global_primal = NULL;
+    double *global_dual = NULL;
+    double *global_reduced_cost = NULL;
+
+    gather_distributed_vector(
+        state->pdhg_primal_solution, 
+        state->num_variables, 
+        state->grid_context->comm_col, // Check Comm
+        state->grid_context->comm_row, // Gather Comm
+        &global_primal
+    );
+
+    gather_distributed_vector(
+        state->dual_slack, // Reduced cost 存在 dual_slack 里
+        state->num_variables, 
+        state->grid_context->comm_col, 
+        state->grid_context->comm_row, 
+        &global_reduced_cost
+    );
+
+    gather_distributed_vector(
+        state->pdhg_dual_solution, 
+        state->num_constraints, 
+        state->grid_context->comm_row, 
+        state->grid_context->comm_col, 
+        &global_dual
+    );
+
+    if (state->grid_context->rank_global == 0) {
+        if (!global_primal || !global_dual) {
+            fprintf(stderr, "Error: Failed to gather solution to root.\n");
+        }
+        
+        results->primal_solution = global_primal;
+        results->dual_solution = global_dual;
+        results->reduced_cost = global_reduced_cost;
+
+        if (original_problem) {
+            results->num_variables = original_problem->num_variables;
+            results->num_constraints = original_problem->num_constraints;
+        }
+        
+            results->num_variables = original_problem->num_variables;
+            results->num_constraints = original_problem->num_constraints;
+            results->num_nonzeros = original_problem->constraint_matrix_num_nonzeros;
+            results->total_count = state->total_count;
+            results->rescaling_time_sec = state->rescaling_time_sec;
+            results->cumulative_time_sec = state->cumulative_time_sec;
+            results->relative_primal_residual = state->relative_primal_residual;
+            results->relative_dual_residual = state->relative_dual_residual;
+            results->absolute_primal_residual = state->absolute_primal_residual;
+            results->absolute_dual_residual = state->absolute_dual_residual;
+            results->primal_objective_value = state->primal_objective_value;
+            results->dual_objective_value = state->dual_objective_value;
+            results->objective_gap = state->objective_gap;
+            results->relative_objective_gap = state->relative_objective_gap;
+            results->max_primal_ray_infeasibility = state->max_primal_ray_infeasibility;
+            results->max_dual_ray_infeasibility = state->max_dual_ray_infeasibility;
+            results->primal_ray_linear_objective = state->primal_ray_linear_objective;
+            results->dual_ray_objective = state->dual_ray_objective;
+            results->termination_reason = state->termination_reason;
+            results->feasibility_polishing_time = state->feasibility_polishing_time;
+            results->feasibility_iteration = state->feasibility_iteration;
+    }
+
+    return results; 
 }

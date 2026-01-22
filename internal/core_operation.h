@@ -32,6 +32,14 @@ extern "C"
         const double *initial_primal, const double *pdhg_primal,
         double *delta_primal, const double *initial_dual, const double *pdhg_dual,
         double *delta_dual, int n_vars, int n_cons);
+    __global__ void compute_and_rescale_reduced_cost_kernel(
+        double *reduced_cost,
+        const double *objective,
+        const double *dual_product,
+        const double *variable_rescaling,
+        const double objective_vector_rescaling,
+        const double constraint_bound_rescaling,
+        int n_vars);
     void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state);
     void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state);
     void halpern_update(pdhg_solver_state_t *state, double reflection_coefficient);
