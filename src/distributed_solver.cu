@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 #include "cupdlpx.h"
+#include "permute.h"
 #include "distribution_utils.h"
 #include "distributed_solver.h"
 #include "distributed_op.h"
@@ -36,9 +37,10 @@ limitations under the License.
 void get_best_grid_dims(int m, int n, int n_procs, int *out_r, int *out_c);
 static void allreduce_obj_bound_norm(pdhg_solver_state_t *state, const pdhg_parameters_t *params);
 cupdlpx_result_t *create_result_from_state_distributed(pdhg_solver_state_t *state, const lp_problem_t *original_problem);
-static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *params,
-                                                   const lp_problem_t *original_problem,
-                                                   grid_context_t *grid_context);
+static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *params, const lp_problem_t *original_problem, grid_context_t *grid_context);
+static void select_valid_grid_size(const pdhg_parameters_t *params, const lp_problem_t *original_problem, pdhg_parameters_t *sub_params);
+static lp_problem_t *permute_lp_problem(const pdhg_parameters_t *params, const lp_problem_t *original_problem, int **out_row_perm, int **out_col_perm);
+static void repermute_solution(cupdlpx_result_t *result, int *row_perm, int *col_perm);
 
 cupdlpx_result_t *distributed_optimize(
     const pdhg_parameters_t *params,
@@ -47,63 +49,43 @@ cupdlpx_result_t *distributed_optimize(
 {
     pdhg_parameters_t sub_params = *params;
 
-    int world_size, rank_global;
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank_global);
+    select_valid_grid_size(params, original_problem, &sub_params);
 
-    if (params->grid_size.decided) 
-    {
-        int provided_rows = params->grid_size.row_dims;
-        int provided_cols = params->grid_size.col_dims;
-        int product = provided_rows * provided_cols;
-
-        if (product != world_size) 
-        {
-            if (rank_global == 0) 
-            {
-                fprintf(stderr, "\n[Error] MPI World Size Mismatch!\n");
-                fprintf(stderr, "------------------------------------------------\n");
-                fprintf(stderr, "User specified grid:  %d x %d = %d processes\n", provided_rows, provided_cols, product);
-                fprintf(stderr, "Actual MPI world size: %d processes\n", world_size);
-                fprintf(stderr, "Please adjust -n (mpirun) or --n_row_tiles/--n_col_tiles.\n");
-                fprintf(stderr, "------------------------------------------------\n");
-            }
-            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-        }
-        sub_params.grid_size.row_dims = provided_rows;
-        sub_params.grid_size.col_dims = provided_cols;
-    }
-    else 
-    {
-        int dims[2]; 
-
-        if (rank_global == 0) 
-        {
-            get_best_grid_dims(
-                original_problem->num_constraints, 
-                original_problem->num_variables, 
-                world_size, 
-                &dims[0], 
-                &dims[1]
-            );
-            
-            if (params->verbose) {
-                printf("[Auto-Grid] Decided grid shape: %d x %d for %d processes.\n", dims[0], dims[1], world_size);
-            }
-        }
-
-        MPI_Bcast(dims, 2, MPI_INT, 0, MPI_COMM_WORLD);
-
-        sub_params.grid_size.row_dims = dims[0];
-        sub_params.grid_size.col_dims = dims[1];
-        sub_params.grid_size.decided = 1; 
-    }
     grid_context_t grid_context = initialize_parallel_context(
         sub_params.grid_size.row_dims, 
         sub_params.grid_size.col_dims
     );
+
     sub_params.verbose = (grid_context.rank_global == 0) ? params->verbose : false;
-    return distributed_optimize_core(&sub_params, original_problem, &grid_context);
+    
+    cupdlpx_result_t *result = NULL;
+    if (params->permute_method != NO_PERMUTATION)
+    {
+        lp_problem_t *permuted_problem = NULL;
+        int *row_perm = NULL;
+        int *col_perm = NULL;
+        if (grid_context.rank_global == 0)
+        {
+            permuted_problem = permute_lp_problem(params, original_problem, &row_perm, &col_perm);
+        }
+
+        result =  distributed_optimize_core(&sub_params, permuted_problem, &grid_context);
+
+        if (grid_context.rank_global == 0)
+        {
+            repermute_solution(result, row_perm, col_perm);
+            if (permuted_problem) {
+                lp_problem_free(permuted_problem);
+            }
+            free(row_perm);
+            free(col_perm);
+        }
+    }
+    else
+    {
+        result = distributed_optimize_core(&sub_params, original_problem, &grid_context);
+    }
+    return result;
 }
 
 static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *params,
@@ -146,8 +128,7 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
         if (grid_context->rank_global == 0)
         {
             cupdlpx_result_t *result = create_result_from_presolve(presolve_info, original_problem);
-            if (presolve_info)
-                cupdlpx_presolve_info_free(presolve_info);
+            if (presolve_info) cupdlpx_presolve_info_free(presolve_info);
             pdhg_final_log(result, params);
             return result;
         }
@@ -222,10 +203,8 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
 
     rescale_info_free(local_rescale_info);
 
-    // TODO: Support distributed Power Method> Current Version has Bugs
     initialize_step_size_and_primal_weight_distributed(state, params);
 
-    // Warm Up Distributed Environment
     compute_residual_distributed(state, params->optimality_norm);
     MPI_Barrier(grid_context->comm_global);
 
@@ -482,4 +461,96 @@ void get_best_grid_dims(int m, int n, int n_procs, int *out_r, int *out_c)
 
     *out_r = best_r;
     *out_c = best_c;
+}
+
+static void select_valid_grid_size(const pdhg_parameters_t *params, const lp_problem_t *original_problem, pdhg_parameters_t *sub_params)
+{
+    int world_size, rank_global;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank_global);
+
+    if (params->grid_size.decided) 
+    {
+        int provided_rows = params->grid_size.row_dims;
+        int provided_cols = params->grid_size.col_dims;
+        int product = provided_rows * provided_cols;
+
+        if (product != world_size) 
+        {
+            if (rank_global == 0) 
+            {
+                fprintf(stderr, "\n[Error] MPI World Size Mismatch!\n");
+                fprintf(stderr, "------------------------------------------------\n");
+                fprintf(stderr, "User specified grid:  %d x %d = %d processes\n", provided_rows, provided_cols, product);
+                fprintf(stderr, "Actual MPI world size: %d processes\n", world_size);
+                fprintf(stderr, "Please adjust -n (mpirun) or --n_row_tiles/--n_col_tiles.\n");
+                fprintf(stderr, "------------------------------------------------\n");
+            }
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        sub_params->grid_size.row_dims = provided_rows;
+        sub_params->grid_size.col_dims = provided_cols;
+    }
+    else 
+    {
+        int dims[2]; 
+
+        if (rank_global == 0) 
+        {
+            get_best_grid_dims(
+                original_problem->num_constraints, 
+                original_problem->num_variables, 
+                world_size, 
+                &dims[0], 
+                &dims[1]
+            );
+            
+            if (params->verbose) {
+                printf("[Auto-Grid] Decided grid shape: %d x %d for %d processes.\n", dims[0], dims[1], world_size);
+            }
+        }
+
+        MPI_Bcast(dims, 2, MPI_INT, 0, MPI_COMM_WORLD);
+
+        sub_params->grid_size.row_dims = dims[0];
+        sub_params->grid_size.col_dims = dims[1];
+        sub_params->grid_size.decided = 1; 
+    }
+    return;
+}
+
+static lp_problem_t *permute_lp_problem(const pdhg_parameters_t *params, const lp_problem_t *original_problem, int **out_row_perm, int **out_col_perm)
+{
+    *out_row_perm = (int *)malloc(original_problem->num_constraints * sizeof(int));
+    *out_col_perm = (int *)malloc(original_problem->num_variables * sizeof(int));
+    
+    int *row_perm = *out_row_perm;
+    int *col_perm = *out_col_perm;
+
+    if (params->permute_method == FULL_RANDOM_PERMUTATION)
+    {
+        generate_random_permutation(original_problem->num_variables, col_perm);
+        generate_random_permutation(original_problem->num_constraints, row_perm);
+    }
+    else if (params->permute_method == BLOCK_RANDOM_PERMUTATION)
+    {
+        generate_block_permutation(original_problem->num_variables, 128, col_perm);
+        generate_block_permutation(original_problem->num_constraints, 128, row_perm);
+    }
+
+    lp_problem_t *new_problem = permute_problem_return_new(original_problem, row_perm, col_perm);
+    return new_problem;
+}
+
+static void repermute_solution(cupdlpx_result_t *result, int *row_perm, int *col_perm)
+{
+    int *inv_col_perm = (int *)malloc(result->num_variables * sizeof(int));
+    int *inv_row_perm = (int *)malloc(result->num_constraints * sizeof(int));
+    compute_inv_perm(result->num_variables, col_perm, inv_col_perm);
+    compute_inv_perm(result->num_constraints, row_perm, inv_row_perm);
+    permute_double_array(result->primal_solution, result->num_variables, inv_col_perm);
+    permute_double_array(result->dual_solution, result->num_constraints, inv_row_perm);
+    permute_double_array(result->reduced_cost, result->num_variables, inv_col_perm);
+    free(inv_col_perm);
+    free(inv_row_perm);
 }

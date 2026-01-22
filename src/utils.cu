@@ -353,6 +353,8 @@ void set_default_parameters(pdhg_parameters_t *params)
     params->presolve = true;
 
     params->grid_size.decided = false;
+    params->partition_method = NNZ_BALANCE_PARTITION;
+    params->permute_method = BLOCK_RANDOM_PERMUTATION;
 }
 
 #define PRINT_DIFF_INT(name, current, default_val) \

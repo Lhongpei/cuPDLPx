@@ -2,6 +2,10 @@
 #include <math.h>
 #include <random>
 
+#ifndef MIN
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#endif
+
 int cmp_tuples(const void *a, const void *b) {
     return ((permute_tuple_t *)a)->new_col - ((permute_tuple_t *)b)->new_col;
 }
@@ -38,7 +42,6 @@ void col_permute_in_place(
             qsort(buffer, len, sizeof(permute_tuple_t), cmp_tuples);
         }
 
-        // 3. 写回 (Write back)
         for (int k = 0; k < len; k++) {
             int current_idx = start + k;
             Aj[current_idx] = buffer[k].new_col;
@@ -125,6 +128,47 @@ void permute_problem(lp_problem_t *qp, int *row_perm, int *col_perm) {
     free(inv_col_perm);
 }
 
+lp_problem_t *permute_problem_return_new(const lp_problem_t *qp, int *row_perm, int *col_perm) {
+    if (!qp) return NULL;
+
+    lp_problem_t *new_qp = (lp_problem_t *)malloc(sizeof(lp_problem_t));
+    if (!new_qp) return NULL;
+
+    new_qp->num_variables = qp->num_variables;
+    new_qp->num_constraints = qp->num_constraints;
+    new_qp->constraint_matrix_num_nonzeros = qp->constraint_matrix_num_nonzeros;
+
+    int n = qp->num_variables;
+    int m = qp->num_constraints;
+    int nnz = qp->constraint_matrix_num_nonzeros;
+
+    #define DEEP_COPY_ARRAY(dest, src, count, type) \
+        if (src) { \
+            dest = (type *)malloc((count) * sizeof(type)); \
+            memcpy(dest, src, (count) * sizeof(type)); \
+        } else { \
+            dest = NULL; \
+        }
+
+    DEEP_COPY_ARRAY(new_qp->objective_vector, qp->objective_vector, n, double);
+    DEEP_COPY_ARRAY(new_qp->variable_lower_bound, qp->variable_lower_bound, n, double);
+    DEEP_COPY_ARRAY(new_qp->variable_upper_bound, qp->variable_upper_bound, n, double);
+    DEEP_COPY_ARRAY(new_qp->primal_start, qp->primal_start, n, double);
+
+    DEEP_COPY_ARRAY(new_qp->constraint_lower_bound, qp->constraint_lower_bound, m, double);
+    DEEP_COPY_ARRAY(new_qp->constraint_upper_bound, qp->constraint_upper_bound, m, double);
+    DEEP_COPY_ARRAY(new_qp->dual_start, qp->dual_start, m, double);
+
+    DEEP_COPY_ARRAY(new_qp->constraint_matrix_row_pointers, qp->constraint_matrix_row_pointers, m + 1, int);
+    DEEP_COPY_ARRAY(new_qp->constraint_matrix_col_indices, qp->constraint_matrix_col_indices, nnz, int);
+    DEEP_COPY_ARRAY(new_qp->constraint_matrix_values, qp->constraint_matrix_values, nnz, double);
+
+    #undef DEEP_COPY_ARRAY
+    permute_problem(new_qp, row_perm, col_perm);
+
+    return new_qp;
+}
+
 void generate_random_permutation(int n, int *perm) {
     for (int i = 0; i < n; i++) perm[i] = i;
     for (int i = n - 1; i > 0; i--) {
@@ -144,6 +188,60 @@ void randomly_permute_problem(lp_problem_t *qp, int **out_row_perm, int **out_co
 
     generate_random_permutation(m, row_perm);
     generate_random_permutation(n, col_perm);
+
+    permute_problem(qp, row_perm, col_perm);
+
+    *out_row_perm = row_perm;
+    *out_col_perm = col_perm;
+}
+
+
+void generate_block_permutation(int n, int block_size, int *perm) {
+    if (block_size <= 0) block_size = 1; 
+    int num_blocks = (n + block_size - 1) / block_size;
+
+    int *block_indices = (int *)malloc(num_blocks * sizeof(int));
+    if (!block_indices) return; 
+
+    for (int i = 0; i < num_blocks; i++) {
+        block_indices[i] = i;
+    }
+
+    for (int i = num_blocks - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int temp = block_indices[i];
+        block_indices[i] = block_indices[j];
+        block_indices[j] = temp;
+    }
+
+    int current_pos = 0;
+    
+    for (int i = 0; i < num_blocks; i++) {
+        int b_idx = block_indices[i];
+        
+        int start_val = b_idx * block_size;
+        int end_val = MIN((b_idx + 1) * block_size, n);
+
+        for (int val = start_val; val < end_val; val++) {
+            perm[current_pos++] = val;
+        }
+    }
+    free(block_indices);
+}
+
+void randomly_block_permute_problem(lp_problem_t *qp, 
+                                    int row_block_size, 
+                                    int col_block_size, 
+                                    int **out_row_perm, 
+                                    int **out_col_perm) {
+    int m = qp->num_constraints;
+    int n = qp->num_variables;
+
+    int *row_perm = (int *)malloc(m * sizeof(int));
+    int *col_perm = (int *)malloc(n * sizeof(int));
+
+    generate_block_permutation(m, row_block_size, row_perm);
+    generate_block_permutation(n, col_block_size, col_perm);
 
     permute_problem(qp, row_perm, col_perm);
 

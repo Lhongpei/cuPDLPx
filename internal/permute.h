@@ -29,7 +29,7 @@ extern "C"
 #endif
 
 typedef struct {
-    int new_col; // 排序键值
+    int new_col; 
     double val;
 } permute_tuple_t;
 
@@ -39,6 +39,12 @@ void permute_problem(lp_problem_t *qp, int *row_perm, int *col_perm);
 
 void randomly_permute_problem(lp_problem_t *qp, int **out_row_perm, int **out_col_perm);
 
+lp_problem_t *permute_problem_return_new(const lp_problem_t *qp, int *row_perm, int *col_perm);
+
+void generate_block_permutation(int n, int block_size, int *perm);
+void generate_random_permutation(int n, int *perm);
+void compute_inv_perm(int n, const int *perm, int *inv_perm);
+void permute_double_array(double *arr, int n, const int *perm);
 #ifdef __cplusplus
 }
 
