@@ -685,3 +685,49 @@ void gather_distributed_vector(
         }
     }
 }
+
+void print_distributed_params(const pdhg_parameters_t *params)
+{
+    if (!params->verbose) return;
+    printf("\n---------- Distributed Configuration ----------\n");
+
+    if (params->grid_size.decided) {
+        printf("  MPI Grid Size:      %d x %d (Rows x Cols)\n", 
+               params->grid_size.row_dims, params->grid_size.col_dims);
+    } else {
+        printf("  MPI Grid Size:      Auto-detect (implementation dependent)\n");
+    }
+
+    printf("  Partition Method:   ");
+    switch (params->partition_method)
+    {
+    case UNIFORM_PARTITION:
+        printf("Uniform\n");
+        break;
+    case NNZ_BALANCE_PARTITION:
+        printf("NNZ Balance\n");
+        break;
+    default:
+        printf("Unknown (%d)\n", params->partition_method);
+        break;
+    }
+
+    printf("  Permute Method:     ");
+    switch (params->permute_method)
+    {
+    case NO_PERMUTATION:
+        printf("None (Original ordering)\n");
+        break;
+    case FULL_RANDOM_PERMUTATION:
+        printf("Full Random (Full Random shuffle)\n");
+        break;
+    case BLOCK_RANDOM_PERMUTATION:
+        printf("Block Random (Block-wise Random shuffle)\n");
+        break;
+    default:
+        printf("Unknown (%d)\n", params->permute_method);
+        break;
+    }
+    
+    printf("---------------------------------------------\n\n");
+}

@@ -40,6 +40,58 @@ extern "C"
         const double objective_vector_rescaling,
         const double constraint_bound_rescaling,
         int n_vars);
+    __global__ void compute_fused_primal_halpern_kernel(
+        double *current_primal,       // IN/OUT: x_k -> x_{k+1}^Halpern
+        double *reflected_primal,     // OUT: 2*x_{k+1} - x_k
+        const double *initial_primal, 
+        const double *dual_product, 
+        const double *objective, 
+        const double *var_lb,
+        const double *var_ub, 
+        int n, 
+        double step_size,
+        double weight);
+
+    __global__ void compute_fused_primal_major_halpern_kernel(
+        double *current_primal,       // IN/OUT: x_k -> x_{k+1}^Halpern
+        double *pdhg_primal,          // OUT: x_{k+1} (PDHG point)
+        double *reflected_primal,     // OUT: 2*x_{k+1} - x_k
+        const double *initial_primal,
+        const double *dual_product, 
+        const double *objective, 
+        const double *var_lb,
+        const double *var_ub, 
+        int n, 
+        double step_size, 
+        double *dual_slack,
+        double weight);
+
+    // ------------------------------------------------------------------
+    // Fused Dual Kernels
+    // ------------------------------------------------------------------
+
+    __global__ void compute_fused_dual_halpern_kernel(
+        double *current_dual,         // IN/OUT: y_k -> y_{k+1}^Halpern
+        double *reflected_dual,       // OUT: 2*y_{k+1} - y_k
+        const double *initial_dual,   
+        const double *primal_product, 
+        const double *const_lb,
+        const double *const_ub, 
+        int n, 
+        double step_size,
+        double weight);
+
+    __global__ void compute_fused_dual_major_halpern_kernel(
+        double *current_dual,         // IN/OUT: y_k -> y_{k+1}^Halpern
+        double *pdhg_dual,            // OUT: y_{k+1} (PDHG point)
+        double *reflected_dual,       // OUT: 2*y_{k+1} - y_k
+        const double *initial_dual,
+        const double *primal_product, 
+        const double *const_lb,
+        const double *const_ub, 
+        int n, 
+        double step_size,
+        double weight);
     void compute_next_pdhg_primal_solution(pdhg_solver_state_t *state);
     void compute_next_pdhg_dual_solution(pdhg_solver_state_t *state);
     void halpern_update(pdhg_solver_state_t *state, double reflection_coefficient);

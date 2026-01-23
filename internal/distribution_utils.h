@@ -48,6 +48,7 @@ void gather_distributed_vector(
     MPI_Comm comm_gather,
     double **result_ptr
 );
+void print_distributed_params(const pdhg_parameters_t *params);
 #ifdef __cplusplus
 }
 #endif

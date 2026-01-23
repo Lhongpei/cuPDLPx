@@ -393,6 +393,115 @@ initialize_solver_state(const pdhg_parameters_t *params,
     return state;
 }
 
+__global__ void compute_fused_primal_halpern_kernel(
+    double *current_primal,
+    double *reflected_primal,
+    const double *initial_primal, 
+    const double *dual_product, 
+    const double *objective, 
+    const double *var_lb,
+    const double *var_ub, 
+    int n, 
+    double step_size,
+    double weight)           
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+    {
+        double x_old = current_primal[i];
+        double grad_step = x_old - step_size * (objective[i] - dual_product[i]);
+        
+        double x_new = fmax(var_lb[i], fmin(grad_step, var_ub[i]));
+        double reflected = 2.0 * x_new - x_old;
+
+        current_primal[i] = weight * reflected + (1.0 - weight) * initial_primal[i];
+        reflected_primal[i] = reflected;
+    }
+}
+
+__global__ void compute_fused_primal_major_halpern_kernel(
+    double *current_primal,   
+    double *pdhg_primal,
+    double *reflected_primal,  
+    const double *initial_primal,
+    const double *dual_product, 
+    const double *objective, 
+    const double *var_lb,
+    const double *var_ub, 
+    int n, 
+    double step_size, 
+    double *dual_slack,
+    double weight)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+    {
+        double x_old = current_primal[i];
+        double grad_step = x_old - step_size * (objective[i] - dual_product[i]);
+        
+        double x_new = fmax(var_lb[i], fmin(grad_step, var_ub[i]));
+        double reflected = 2.0 * x_new - x_old;
+        pdhg_primal[i] = x_new;
+        dual_slack[i] = (x_new - grad_step) / step_size;
+        current_primal[i] = weight * reflected + (1.0 - weight) * initial_primal[i];
+        reflected_primal[i] = reflected;
+    }
+}
+
+__global__ void compute_fused_dual_halpern_kernel(
+    double *current_dual,    
+    double *reflected_dual,  
+    const double *initial_dual,  
+    const double *primal_product, 
+    const double *const_lb,
+    const double *const_ub, 
+    int n, 
+    double step_size,
+    double weight)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+    {
+        double y_old = current_dual[i];
+        
+        double temp = y_old / step_size - primal_product[i];
+        double temp_proj = fmax(-const_ub[i], fmin(temp, -const_lb[i]));
+        double y_new = (temp - temp_proj) * step_size;
+        double reflected = 2.0 * y_new - y_old;
+
+        current_dual[i] = weight * reflected + (1.0 - weight) * initial_dual[i];
+        reflected_dual[i] = reflected;
+    }
+}
+
+__global__ void compute_fused_dual_major_halpern_kernel(
+    double *current_dual, 
+    double *pdhg_dual, 
+    double *reflected_dual,
+    const double *initial_dual,
+    const double *primal_product, 
+    const double *const_lb,
+    const double *const_ub, 
+    int n, 
+    double step_size,
+    double weight)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+    {
+        double y_old = current_dual[i];
+        double temp = y_old / step_size - primal_product[i];
+        double temp_proj = fmax(-const_ub[i], fmin(temp, -const_lb[i]));
+        
+        double y_new = (temp - temp_proj) * step_size;
+        pdhg_dual[i] = y_new;
+        
+        double reflected = 2.0 * y_new - y_old;
+        current_dual[i] = weight * reflected + (1.0 - weight) * initial_dual[i];
+        reflected_dual[i] = reflected;
+    }
+}
+
 __global__ void compute_next_pdhg_primal_solution_kernel(
     const double *current_primal, double *reflected_primal,
     const double *dual_product, const double *objective, const double *var_lb,

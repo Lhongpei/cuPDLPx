@@ -397,6 +397,8 @@ int run_d_pdlpx(int argc, char *argv[])
         {"opt_norm", required_argument, 0, 1014},
         {"no_presolve", no_argument, 0, 1015},
         {"grid_size",   required_argument, 0, 2001},
+        {"partition_method", required_argument, 0, 2002},
+        {"permute_method",   required_argument, 0, 2003},
         {0, 0, 0, 0}};
 
     // 3. Argument Parsing
@@ -503,6 +505,33 @@ int run_d_pdlpx(int argc, char *argv[])
             }
             break;
         }
+        case 2002: // --partition_method
+            {
+                if (strcmp(optarg, "uniform") == 0) {
+                    params.partition_method = UNIFORM_PARTITION;
+                } else if (strcmp(optarg, "nnz") == 0 || strcmp(optarg, "nnz_balance") == 0) {
+                    params.partition_method = NNZ_BALANCE_PARTITION;
+                } else {
+                    if (rank_global == 0) fprintf(stderr, "Error: partition_method must be 'uniform' or 'nnz'\n");
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                }
+            }
+            break;
+
+        case 2003: // --permute_method
+            {
+                if (strcmp(optarg, "none") == 0 || strcmp(optarg, "no") == 0) {
+                    params.permute_method = NO_PERMUTATION;
+                } else if (strcmp(optarg, "random") == 0 || strcmp(optarg, "full") == 0) {
+                    params.permute_method = FULL_RANDOM_PERMUTATION;
+                } else if (strcmp(optarg, "block") == 0) {
+                    params.permute_method = BLOCK_RANDOM_PERMUTATION;
+                } else {
+                    if (rank_global == 0) fprintf(stderr, "Error: permute_method must be 'none', 'random', or 'block'\n");
+                    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+                }
+            }
+            break;
         }
     }
 

@@ -22,6 +22,8 @@ extern "C"
     } while(0)
     void compute_next_pdhg_primal_solution_distributed(pdhg_solver_state_t *state);
     void compute_next_pdhg_dual_solution_distributed(pdhg_solver_state_t *state);
+    void compute_next_pdhg_primal_solution_distributed_fuse_halpern(pdhg_solver_state_t *state);
+    void compute_next_pdhg_dual_solution_distributed_fuse_halpern(pdhg_solver_state_t *state);
     void perform_restart_distributed(pdhg_solver_state_t *state, const pdhg_parameters_t *params);
     void compute_fixed_point_error_distributed(pdhg_solver_state_t *state);
     void compute_residual_distributed(pdhg_solver_state_t *state, norm_type_t optimality_norm);

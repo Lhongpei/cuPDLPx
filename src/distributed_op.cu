@@ -110,6 +110,125 @@ void compute_next_pdhg_dual_solution_distributed(pdhg_solver_state_t *state)
     }
 }
 
+void compute_next_pdhg_primal_solution_distributed_fuse_halpern(pdhg_solver_state_t *state)
+{
+    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_sol,
+                                          state->current_dual_solution));
+    CUSPARSE_CHECK(
+        cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product));
+    
+    CUSPARSE_CHECK(cusparseSpMV(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
+        state->matAt, state->vec_dual_sol, &HOST_ZERO, state->vec_dual_prod,
+        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->dual_spmv_buffer));
+
+    NCCL_CHECK(ncclAllReduce(
+        (const void *)state->dual_product, 
+        (void *)state->dual_product,      
+        state->num_variables,              
+        ncclDouble,                   
+        ncclSum,                         
+        state->grid_context->nccl_col,    
+        0                                
+    ));
+
+    double step = state->step_size / state->primal_weight;
+    double weight = (double)(state->inner_count + 1) / (state->inner_count + 2);
+
+    if (state->is_this_major_iteration ||
+        ((state->total_count + 2) %
+         get_print_frequency(state->total_count + 2)) == 0)
+    {
+        compute_fused_primal_major_halpern_kernel<<<state->num_blocks_primal,
+                                                    THREADS_PER_BLOCK>>>(
+            state->current_primal_solution,   
+            state->pdhg_primal_solution,      
+            state->reflected_primal_solution,
+            state->initial_primal_solution,  
+            state->dual_product,
+            state->objective_vector,
+            state->variable_lower_bound,
+            state->variable_upper_bound,
+            state->num_variables,
+            step,
+            state->dual_slack,
+            weight);
+    }
+    else
+    {
+        compute_fused_primal_halpern_kernel<<<state->num_blocks_primal,
+                                              THREADS_PER_BLOCK>>>(
+            state->current_primal_solution,  
+            state->reflected_primal_solution, 
+            state->initial_primal_solution,  
+            state->dual_product,
+            state->objective_vector,
+            state->variable_lower_bound,
+            state->variable_upper_bound,
+            state->num_variables,
+            step,
+            weight);
+    }
+}
+
+void compute_next_pdhg_dual_solution_distributed_fuse_halpern(pdhg_solver_state_t *state)
+{
+    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_sol,
+                                          state->reflected_primal_solution));
+    CUSPARSE_CHECK(
+        cusparseDnVecSetValues(state->vec_primal_prod, state->primal_product));
+
+    CUSPARSE_CHECK(cusparseSpMV(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
+        state->matA, state->vec_primal_sol, &HOST_ZERO, state->vec_primal_prod,
+        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->primal_spmv_buffer));
+
+    NCCL_CHECK(ncclAllReduce(
+        (const void *)state->primal_product, 
+        (void *)state->primal_product,
+        state->num_constraints,
+        ncclDouble,
+        ncclSum,
+        state->grid_context->nccl_row,
+        0
+    ));
+
+    double step = state->step_size * state->primal_weight;
+    double weight = (double)(state->inner_count + 1) / (state->inner_count + 2);
+
+    if (state->is_this_major_iteration ||
+        ((state->total_count + 2) %
+         get_print_frequency(state->total_count + 2)) == 0)
+    {
+        compute_fused_dual_major_halpern_kernel<<<state->num_blocks_dual,
+                                                  THREADS_PER_BLOCK>>>(
+            state->current_dual_solution,     
+            state->pdhg_dual_solution,      
+            state->reflected_dual_solution,   
+            state->initial_dual_solution,    
+            state->primal_product,
+            state->constraint_lower_bound,
+            state->constraint_upper_bound,
+            state->num_constraints,
+            step,
+            weight);
+    }
+    else
+    {
+        compute_fused_dual_halpern_kernel<<<state->num_blocks_dual,
+                                            THREADS_PER_BLOCK>>>(
+            state->current_dual_solution,    
+            state->reflected_dual_solution,   
+            state->initial_dual_solution,   
+            state->primal_product,
+            state->constraint_lower_bound,
+            state->constraint_upper_bound,
+            state->num_constraints,
+            step,
+            weight);
+    }
+}
+
 void compute_fixed_point_error_distributed(pdhg_solver_state_t *state)
 {
     compute_delta_solution_kernel<<<state->num_blocks_primal_dual,
@@ -375,3 +494,4 @@ void compute_residual_distributed(pdhg_solver_state_t *state, norm_type_t optima
         state->objective_gap / (1.0 + fabs(state->primal_objective_value) +
                                 fabs(state->dual_objective_value));
 }
+

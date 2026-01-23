@@ -93,6 +93,7 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
                                                    grid_context_t *grid_context)
 {
     print_initial_info(params, original_problem);
+    print_distributed_params(params);
     const lp_problem_t *working_problem = original_problem;
 
     rescale_info_t *rescale_info = NULL;
@@ -207,7 +208,9 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
 
     compute_residual_distributed(state, params->optimality_norm);
     MPI_Barrier(grid_context->comm_global);
-
+    
+    bool fuse_halpern = params->reflection_coefficient == 1.0;
+    if (fuse_halpern && params->verbose) printf("Halpern update is fused in primal dual update!\n");
     double start_time = MPI_Wtime();
     bool do_restart = false;
     while (state->total_count < params->termination_criteria.iteration_limit)
@@ -246,8 +249,15 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
             ((state->total_count + 1) % params->termination_evaluation_frequency) ==
             0;
 
-        compute_next_pdhg_primal_solution_distributed(state);
-        compute_next_pdhg_dual_solution_distributed(state);
+        if (fuse_halpern){
+            compute_next_pdhg_primal_solution_distributed_fuse_halpern(state);
+            compute_next_pdhg_dual_solution_distributed_fuse_halpern(state);
+        }
+        else
+        {
+            compute_next_pdhg_primal_solution_distributed(state);
+            compute_next_pdhg_dual_solution_distributed(state);
+        }
 
         if (state->is_this_major_iteration || do_restart)
         {
@@ -258,7 +268,8 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
                 do_restart = false;
             }
         }
-        halpern_update(state, params->reflection_coefficient);
+
+        if (!fuse_halpern) halpern_update(state, params->reflection_coefficient);
 
         state->inner_count++;
         state->total_count++;
