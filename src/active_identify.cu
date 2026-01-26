@@ -7,6 +7,8 @@
 #include "preconditioner.h"
 #include "solver.h"
 #include "cupdlpx_types.h"
+#include <math.h>
+#include <float.h>
 // --- Helper: Build Index Mapping ---
 // Creates a map: old_index -> new_index.
 // Returns the size of the new dimension.
@@ -407,12 +409,60 @@ void scatter_host_to_gpu_masked(
     const bool *h_mask,       // Mask (Host)
     int full_dim);
 
+double compute_l2_norm(const double *vec, int n) {
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += vec[i] * vec[i];
+    }
+    return sqrt(sum);
+}
+#define THRESHOLD_OSC 0.1 
+#define THRESHOLD_TREND 0.9
+static void mark_oscillating_variables(
+    const double * ema_diff,    
+    const double * ema_abs,  
+    double *norm,
+    bool *is_scaling,
+    const int n_vars)
+{
+    for (int j = 0; j < n_vars; j++) {
+        double trend = ema_diff[j];  
+        double path  = ema_abs[j];   
+        
+        if (path < 1e-9) {
+            norm[j] = 1.0;
+            continue;
+        }
+
+        double ratio = fabs(trend) / path;
+        
+        if (ratio < THRESHOLD_OSC) {
+            norm[j] = 2.0; 
+            is_scaling[j] = true;
+        } 
+        else if (ratio > THRESHOLD_TREND) {
+            norm[j] = 0.5; 
+            is_scaling[j] = true;
+        } 
+        else {
+            norm[j] = 1.0;
+        }
+    }
+}
+
 cupdlpx_result_t *optimize_two_stage(
     const pdhg_parameters_t *params,
     const lp_problem_t *original_problem,
     const double coarse_tol, 
     const double fine_tol, 
-    bool verbose){
+    const double time_limit,
+    const bool oscillation_based_scaling,
+    bool verbose,
+    bool inner_verbose)
+{
+    // ============================================================
+    // Stage 1: Coarse Solve (Warm-up & Pattern Recognition)
+    // ============================================================
     if (verbose) {
         printf("\n>>> Stage 1: Solving to coarse tolerance %.1e...\n", coarse_tol);
     }
@@ -420,32 +470,154 @@ cupdlpx_result_t *optimize_two_stage(
     pdhg_parameters_t params_stage1 = *params;
     params_stage1.termination_criteria.eps_optimal_relative = coarse_tol;
     params_stage1.termination_criteria.eps_feasible_relative = coarse_tol;
+    params_stage1.termination_criteria.time_sec_limit = time_limit;
+    // params_stage1.termination_criteria.iteration_limit = 50000;
+    params_stage1.verbose = inner_verbose; // Suppress verbose in Stage 1
     
     cupdlpx_result_t *result_stage1 = optimize(&params_stage1, original_problem);
+    params_stage1.termination_criteria.iteration_limit = INT32_MAX; // Reset iteration limit
 
     if (!result_stage1) {
-        if (verbose) printf(">>> Stage 1 failed to return a result.\n");
+        if (verbose) printf(">>> Stage 1 failed.\n");
         return NULL;
     }
 
+    // ============================================================
+    // Analysis: Oscillation Detection Only
+    // ============================================================
+    int n_rows = original_problem->num_constraints;
+    int n_cols = original_problem->num_variables;
+
+    bool *is_col_oscillating = (bool *)calloc(n_cols, sizeof(bool));
+    double *col_osc_scores   = (double *)calloc(n_cols, sizeof(double));
+    bool *is_row_oscillating = (bool *)calloc(n_rows, sizeof(bool));
+    double *row_osc_scores   = (double *)calloc(n_rows, sizeof(double));
+
+    pdhg_iteration_statistics_t *stats = result_stage1->iteration_stats;
+
+    if (!oscillation_based_scaling) {
+        if (verbose) {
+            printf(">>> Oscillation Based Scaling is disabled. Direct warm-start to Stage 2.\n");
+        }
+        free(is_col_oscillating); free(col_osc_scores);
+        free(is_row_oscillating); free(row_osc_scores);
+        lp_problem_t problem_stage2 = *original_problem;
+        set_start_values(&problem_stage2, result_stage1->primal_solution, result_stage1->dual_solution);
+        params_stage1.termination_criteria.time_sec_limit = time_limit - result_stage1->cumulative_time_sec;
+        params_stage1.termination_criteria.eps_optimal_relative = fine_tol;
+        params_stage1.termination_criteria.eps_feasible_relative = fine_tol;
+        // params_stage1.restart_params.artificial_restart_threshold = 0.5;
+        params_stage1.verbose = inner_verbose;
+        params_stage1.init_primal_weight = result_stage1->primal_weight;
+        params_stage1.init_primal_weight_integral = result_stage1->primal_weight_integral;
+        cupdlpx_result_t *result_stage2 = optimize(&params_stage1, &problem_stage2);
+        if (result_stage2) {
+            result_stage2->cumulative_time_sec += result_stage1->cumulative_time_sec;
+            result_stage2->total_count += result_stage1->total_count;
+        }
+        return result_stage2;
+    }
+    if (stats && stats->primal_mean && stats->primal_sq_mean) {
+        mark_oscillating_variables(
+            stats->primal_mean,
+            stats->primal_sq_mean,
+            col_osc_scores,
+            is_col_oscillating,
+            n_cols
+        );
+    }
+
+    if (stats && stats->dual_mean && stats->dual_sq_mean) {
+        mark_oscillating_variables(
+            stats->dual_mean,
+            stats->dual_sq_mean,
+            row_osc_scores,
+            is_row_oscillating,
+            n_rows
+        );
+    }
+
+    // ============================================================
+    // Scaling Construction (Oscillation Based Only)
+    // ============================================================
+    
+    double *input_row_norm = (double *)malloc(n_rows * sizeof(double));
+    double *input_col_norm = (double *)malloc(n_cols * sizeof(double));
+    
+    int primal_osc_count = 0;
+    int dual_osc_count = 0;
+    for (int j = 0; j < n_cols; j++) {
+        if (is_col_oscillating[j]) {
+            input_col_norm[j] = col_osc_scores[j];
+            primal_osc_count++;
+        } else {
+            input_col_norm[j] = 1.0;
+        }
+    }
+    for (int i = 0; i < n_rows; i++) {
+        if (is_row_oscillating[i]) {
+            input_row_norm[i] = row_osc_scores[i];
+            dual_osc_count++;
+        } else {
+            input_row_norm[i] = 1.0;
+        }
+    }
+
     if (verbose) {
-        printf("\n>>> Stage 2: Solving to fine tolerance %.1e using warm start...\n", fine_tol);
+        printf(">>> Oscillation Based Scaling Applied:\n");
+        printf("    Damped Columns: %d / %d (%.2f%%)\n", 
+               primal_osc_count, n_cols, 100.0 * primal_osc_count / n_cols);
+        printf("    Damped Rows:    %d / %d (%.2f%%)\n", 
+               dual_osc_count, n_rows, 100.0 * dual_osc_count / n_rows);
+    }
+
+    // ============================================================
+    // Stage 2: Fine Solve
+    // ============================================================
+    if (verbose) {
+        printf("\n>>> Stage 2: Solving to fine tolerance %.1e...\n", fine_tol);
     }
 
     pdhg_parameters_t params_stage2 = *params;
     params_stage2.termination_criteria.eps_optimal_relative = fine_tol;
     params_stage2.termination_criteria.eps_feasible_relative = fine_tol;
-    lp_problem_t problem_stage2 = *original_problem;
-    params_stage2.init_primal_weight = result_stage1->primal_weight;
+    params_stage2.verbose = inner_verbose;
+    double time_used = result_stage1->cumulative_time_sec;
+    params_stage2.termination_criteria.time_sec_limit = time_limit - time_used;
+    // params_stage2.init_primal_weight = result_stage1->primal_weight;
     // params_stage2.init_primal_weight_integral = result_stage1->primal_weight_integral;
-    // problem_stage2.primal_start = result_stage1->primal_solution;
-    // problem_stage2.dual_start   = result_stage1->dual_solution;
-    set_start_values(
-        &problem_stage2,
-        result_stage1->primal_solution,
-        result_stage1->dual_solution);
+    if (params_stage2.termination_criteria.time_sec_limit <= 0) {
+        if (verbose) printf(">>> Time limit exceeded in Stage 1.\n");
+        free(input_row_norm); free(input_col_norm);
+        free(is_col_oscillating); free(col_osc_scores);
+        free(is_row_oscillating); free(row_osc_scores);
+        return result_stage1;
+    }
 
-    cupdlpx_result_t *result_stage2 = optimize(&params_stage2, &problem_stage2);
+    lp_problem_t problem_stage2 = *original_problem;
+    set_start_values(&problem_stage2, result_stage1->primal_solution, result_stage1->dual_solution);
+    params_stage2.restart_params.artificial_restart_threshold = 0.5;
+    cupdlpx_result_t *result_stage2 = optimize_with_input_norm(
+        &params_stage2, 
+        &problem_stage2, 
+        input_row_norm, 
+        input_col_norm
+    );
+
+    // ============================================================
+    // Cleanup
+    // ============================================================
+    free(input_row_norm);
+    free(input_col_norm);
+    free(is_col_oscillating);
+    free(col_osc_scores);
+    free(is_row_oscillating);
+    free(row_osc_scores);
+
+    if (result_stage2) {
+        result_stage2->cumulative_time_sec += time_used;
+        result_stage2->total_count += result_stage1->total_count;
+    }
 
     return result_stage2;
 }
@@ -582,8 +754,10 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     // ------------------------------------------------------------------
     // 2. ADAPTIVE IDENTIFICATION LOOP
     // ------------------------------------------------------------------
-    double obtain_global_optimal = false;
+    double obtain_ACTIVE_SET_GLOBAL_OPTIMAL = false;
     int no_prograss_time = 0;
+    int patience = 1;
+    active_set_termination_reason_t active_set_status = ACTIVE_SET_NO_START_ACTIVE_SET;
     for(int iter = 0; iter < max_adaptive_iteration; ++iter)
     {
         stats->adaptive_loops = iter;
@@ -609,6 +783,8 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
             free(y_start);
             break;
         }
+
+        active_set_status = ACTIVE_SET_IN_PROGRESS;
 
         if (verbose) printf(">>> Adaptive Iteration %d / %d\n", iter + 1, max_adaptive_iteration);
 
@@ -658,17 +834,16 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         int num_violated_cols = 0;
         // double tol_row_basic = tol;
         // double tol_col_basic = tol;
-        if (residual >= 0.5 * last_residual){
+        if (residual > 1e-3 || (residual >= 0.5 * last_residual && sub_result->termination_reason != TERMINATION_REASON_OPTIMAL)) {
             no_prograss_time += 1;
-            // tol_row_basic *= pow(0.1, no_prograss_time);
-            // tol_col_basic *= pow(0.1, no_prograss_time);
-            
         }
 
-        if (no_prograss_time >= 5) {
+        if (no_prograss_time >= patience) {
             for (int i = 0; i < original_problem->num_constraints; ++i) mask_row[i] = true; 
             for (int i = 0; i < original_problem->num_variables; ++i) mask_col[i] = true;
-            printf("No prograss for 5 iterations, adding all rows and columns to the sub-LP.\n");
+            // printf("No prograss for  iterations, adding all rows and columns to the sub-LP.\n");
+            if (verbose) printf(">>> Stopping early (No Progress in Active Set Identification for %d iterations)\n", patience);
+            active_set_status = ACTIVE_SET_FALLBACK_ORIGINAL;
             break;
         }
 
@@ -684,7 +859,8 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
             if (sub_result->termination_reason == TERMINATION_REASON_OPTIMAL) {
                 if (verbose) printf(">>> Stopping early (Optimal & Valid)\n");
                 should_break = true;
-                obtain_global_optimal = true;
+                obtain_ACTIVE_SET_GLOBAL_OPTIMAL = true;
+                active_set_status = ACTIVE_SET_GLOBAL_OPTIMAL;
             }
         } else {
             printf("   >>> Global Violations: +%d rows, +%d cols.\n", num_violated_rows, num_violated_cols);
@@ -692,7 +868,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
 
         // Logic to update Sub-LP or Skip
         if (!should_break) {
-            if (residual < 0.5 * last_residual && sub_result->termination_reason != TERMINATION_REASON_OPTIMAL) {
+            if ((residual < 1e-3 && residual < 0.5 * last_residual) || sub_result->termination_reason == TERMINATION_REASON_OPTIMAL) {
                 printf("   Sub-LP Improved (%.3e -> %.3e), skipping mask update.\n", last_residual, residual);
                 
                 if (residual < best_residual) {
@@ -704,7 +880,7 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
                     init_primal_weight = sub_result->primal_weight;
                     init_primal_weight_integral = sub_result->primal_weight_integral;
                     }
-                no_prograss_time = 0;
+                // no_prograss_time = 0;
             } 
             // else {
                 printf("   Updating Mask with violations.\n");
@@ -758,12 +934,12 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     final_params->init_primal_weight_integral = init_primal_weight_integral;
     final_params->termination_criteria.time_sec_limit = time_limit - (stats->phase0_time + stats->adaptive_time_sum);
         
-    if (obtain_global_optimal) {
+    if (obtain_ACTIVE_SET_GLOBAL_OPTIMAL) {
         final_params->termination_criteria.iteration_limit = 0; // No iterations needed
     }
     cupdlpx_result_t *final_result = optimize(final_params, final_sub_lp);
 
-    if (!obtain_global_optimal) {
+    if (!obtain_ACTIVE_SET_GLOBAL_OPTIMAL) {
         cupdlpx_copy_solution_stats(main_result, final_result);
     }
     stats->final_iter = final_result->total_count;
@@ -792,7 +968,6 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
         mask_row,
         original_problem->num_constraints);
 
-    // Step B: full GPU state -> full CPU (main_result)
     CUDA_CHECK(cudaMemcpy(
         main_result->primal_solution,
         complete_state->pdhg_primal_solution,
@@ -808,6 +983,9 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     // ------------------------------------------------------------------
     // 5. GLOBAL CLEANUP
     // ------------------------------------------------------------------
+    main_result->has_adaptive_active_set = true;
+    main_result->active_set_termination_reason = active_set_status;
+    main_result->adaptive_iteration = stats->adaptive_loops;
     // Free Final Phase Objects
     free(x_start);
     free(y_start);
@@ -830,7 +1008,6 @@ cupdlpx_result_t *optimize_with_adaptive_active_identify(
     
     // Free Solver State (Assuming this function cleans internal GPU pointers)
     pdhg_solver_state_free(complete_state); // Placeholder
-
     return main_result;
 }
 
@@ -898,16 +1075,16 @@ void generate_initial_mask(
 
     int rm_col_count = 0;
     int rm_row_count = 0;
-    double limit = effective_threshold * (double)(solver_res->update_acitve_times + 1);
+    double limit = effective_threshold * (double)(solver_res->iteration_stats->update_active_times + 1);
 
     // Columns (Variables) - using primal_active_times
-    if (solver_res->primal_active_times)
+    if (solver_res->iteration_stats->primal_active_times)
     {
         for (int i = 0; i < n; ++i)
         {
             // If active_time > limit, we remove it (mask = false)
             // Otherwise we keep it (mask = true)
-            bool remove = (double)solver_res->primal_active_times[i] > limit;
+            bool remove = (double)solver_res->iteration_stats->primal_active_times[i] > limit;
             mask_col[i] = !remove;
             if (remove)
                 rm_col_count++;
@@ -923,12 +1100,12 @@ void generate_initial_mask(
     }
 
     // Rows (Constraints) - using dual_active_times (inactive times)
-    if (solver_res->dual_active_times)
+    if (solver_res->iteration_stats->dual_active_times)
     {
         for (int i = 0; i < m; ++i)
         {
             // Note: Julia code used "constrs_inactive_times".
-            bool remove = (double)solver_res->dual_active_times[i] > limit;
+            bool remove = (double)solver_res->iteration_stats->dual_active_times[i] > limit;
             // remove = false;
             mask_row[i] = !remove;
             if (remove)

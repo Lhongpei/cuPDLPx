@@ -26,6 +26,11 @@ extern "C"
     cupdlpx_result_t *optimize(
         const pdhg_parameters_t *params,
         const lp_problem_t *original_problem);
+    cupdlpx_result_t *optimize_with_input_norm(
+                            const pdhg_parameters_t *params,
+                            const lp_problem_t *original_problem,
+                            const double *input_row_norm,
+                            const double *input_col_norm);
     pdhg_solver_state_t *initialize_solver_state(
         const lp_problem_t *original_problem,
         const rescale_info_t *rescale_info);

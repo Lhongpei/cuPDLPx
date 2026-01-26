@@ -33,6 +33,21 @@ typedef struct
 
 typedef struct
 {
+	int *primal_active_times;
+	int *dual_active_times;
+	int update_active_times;
+	double *primal_mean;
+	double *dual_mean;
+	double *primal_sq_mean;
+	double *dual_sq_mean;
+	double *primal_oscillation;
+	double *dual_oscillation;
+	double *primal_residual_info;
+	double *dual_residual_info;
+} cupdhg_iteration_statistics_t;
+
+typedef struct
+{
 	int num_variables;
 	int num_constraints;
 	double *variable_lower_bound;
@@ -126,10 +141,12 @@ typedef struct
 	double feasibility_polishing_time;
 	int feasibility_iteration;
 
-	int *primal_active_times;
-	int *dual_active_times;
-	int update_active_times;
+	cupdhg_iteration_statistics_t *iter_stats;
+
+	
 } pdhg_solver_state_t;
+
+
 
 typedef struct
 {

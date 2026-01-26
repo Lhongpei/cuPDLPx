@@ -304,3 +304,105 @@ rescale_info_t *rescale_problem(const pdhg_parameters_t *params,
         (double)(clock() - start_rescaling) / CLOCKS_PER_SEC;
     return rescale_info;
 }
+
+rescale_info_t *rescale_problem_with_input_norm(
+    const pdhg_parameters_t *params,
+    const lp_problem_t *original_problem, 
+    const double *input_row_norm,
+    const double *input_col_norm)
+{
+    clock_t start_rescaling = clock();
+    rescale_info_t *rescale_info =
+        (rescale_info_t *)safe_calloc(1, sizeof(rescale_info_t));
+    rescale_info->scaled_problem = deepcopy_problem(original_problem);
+    if (rescale_info->scaled_problem == NULL)
+    {
+        fprintf(stderr,
+                "Failed to create a copy of the problem. Aborting rescale.\n");
+        return NULL;
+    }
+    int num_cons = original_problem->num_constraints;
+    int num_vars = original_problem->num_variables;
+
+    rescale_info->con_rescale = safe_malloc(num_cons * sizeof(double));
+    rescale_info->var_rescale = safe_malloc(num_vars * sizeof(double));
+    for (int i = 0; i < num_cons; ++i)
+        rescale_info->con_rescale[i] = 1.0;
+    for (int i = 0; i < num_vars; ++i)
+        rescale_info->var_rescale[i] = 1.0;
+    scale_problem(rescale_info->scaled_problem, input_row_norm, input_col_norm);
+    if (params->l_inf_ruiz_iterations > 0)
+    {
+        ruiz_rescaling(rescale_info->scaled_problem, params->l_inf_ruiz_iterations,
+                       rescale_info->con_rescale, rescale_info->var_rescale);
+    }
+    if (params->has_pock_chambolle_alpha)
+    {
+        pock_chambolle_rescaling(
+            rescale_info->scaled_problem, params->pock_chambolle_alpha,
+            rescale_info->con_rescale, rescale_info->var_rescale);
+    }
+    if (params->bound_objective_rescaling)
+    {
+        double bound_norm_sq = 0.0;
+        for (int i = 0; i < num_cons; ++i)
+        {
+            if (isfinite(rescale_info->scaled_problem->constraint_lower_bound[i]) &&
+                (rescale_info->scaled_problem->constraint_lower_bound[i] !=
+                 rescale_info->scaled_problem->constraint_upper_bound[i]))
+            {
+                bound_norm_sq +=
+                    rescale_info->scaled_problem->constraint_lower_bound[i] *
+                    rescale_info->scaled_problem->constraint_lower_bound[i];
+            }
+            if (isfinite(rescale_info->scaled_problem->constraint_upper_bound[i]))
+            {
+                bound_norm_sq +=
+                    rescale_info->scaled_problem->constraint_upper_bound[i] *
+                    rescale_info->scaled_problem->constraint_upper_bound[i];
+            }
+        }
+
+        double obj_norm_sq = 0.0;
+        for (int i = 0; i < num_vars; ++i)
+        {
+            obj_norm_sq += rescale_info->scaled_problem->objective_vector[i] *
+                           rescale_info->scaled_problem->objective_vector[i];
+        }
+
+        rescale_info->con_bound_rescale = 1.0 / (sqrt(bound_norm_sq) + 1.0);
+        rescale_info->obj_vec_rescale = 1.0 / (sqrt(obj_norm_sq) + 1.0);
+
+        for (int i = 0; i < num_cons; ++i)
+        {
+            rescale_info->scaled_problem->constraint_lower_bound[i] *=
+                rescale_info->con_bound_rescale;
+            rescale_info->scaled_problem->constraint_upper_bound[i] *=
+                rescale_info->con_bound_rescale;
+        }
+        for (int i = 0; i < num_vars; ++i)
+        {
+            rescale_info->scaled_problem->variable_lower_bound[i] *=
+                rescale_info->con_bound_rescale;
+            rescale_info->scaled_problem->variable_upper_bound[i] *=
+                rescale_info->con_bound_rescale;
+            rescale_info->scaled_problem->objective_vector[i] *=
+                rescale_info->obj_vec_rescale;
+        }
+    }
+    else
+    {
+        rescale_info->con_bound_rescale = 1.0;
+        rescale_info->obj_vec_rescale = 1.0;
+    }
+
+    
+    for (int i = 0; i < num_vars; ++i)
+        rescale_info->var_rescale[i] *= input_col_norm[i];
+    for (int i = 0; i < num_cons; ++i)
+        rescale_info->con_rescale[i] *= input_row_norm[i];
+
+    rescale_info->rescaling_time_sec =
+        (double)(clock() - start_rescaling) / CLOCKS_PER_SEC;
+    return rescale_info;
+}

@@ -19,6 +19,7 @@ limitations under the License.
 #include "solver.h"
 #include "utils.h"
 #include "active_identify.h"
+#include "iterative_refinement.h"
 #include <getopt.h>
 #include <libgen.h>
 #include <stdbool.h>
@@ -44,6 +45,23 @@ const char *termination_reason_tToString(termination_reason_t reason)
     case TERMINATION_REASON_UNSPECIFIED:
     case TERMINATION_REASON_FEAS_POLISH_SUCCESS:
         return "FEAS_POLISH_SUCCESS";
+    default:
+        return "UNSPECIFIED";
+    }
+}
+
+const char *active_set_termination_reason_tToString(active_set_termination_reason_t reason)
+{
+    switch (reason)
+    {
+    case ACTIVE_SET_GLOBAL_OPTIMAL:
+        return "GLOBAL_OPTIMAL";
+    case ACTIVE_SET_FALLBACK_ORIGINAL:
+        return "FALLBACK_ORIGINAL";
+    case ACTIVE_SET_NO_START_ACTIVE_SET:
+        return "NO_START";
+    case ACTIVE_SET_IN_PROGRESS:
+        return "IN_PROGRESS";
     default:
         return "UNSPECIFIED";
     }
@@ -129,8 +147,12 @@ void save_solver_summary(const cupdlpx_result_t *result, const char *output_dir,
     fprintf(outfile, "Primal Objective Value: %e\n",
             result->primal_objective_value);
     fprintf(outfile, "Dual Objective Value: %e\n", result->dual_objective_value);
+    fprintf(outfile, "Absolute Primal Residual: %e\n",
+            result->absolute_primal_residual);
     fprintf(outfile, "Relative Primal Residual: %e\n",
             result->relative_primal_residual);
+    fprintf(outfile, "Absolute Dual Residual: %e\n",
+            result->absolute_dual_residual);
     fprintf(outfile, "Relative Dual Residual: %e\n",
             result->relative_dual_residual);
     fprintf(outfile, "Absolute Objective Gap: %e\n", result->objective_gap);
@@ -139,6 +161,10 @@ void save_solver_summary(const cupdlpx_result_t *result, const char *output_dir,
     if(result->feasibility_polishing_time > 0.0){
         fprintf(outfile, "Feasibility Polishing Time (sec): %e\n", result->feasibility_polishing_time);
         fprintf(outfile, "Feasibility Polishing Iteration Count: %d\n", result->feasibility_iteration);
+    }
+    if (result->has_adaptive_active_set) {
+        fprintf(outfile, "Adaptive Active Set Iterations: %d\n", result->adaptive_iteration);
+        fprintf(outfile, "Active Set Termination Reason: %s\n", active_set_termination_reason_tToString(result->active_set_termination_reason));
     }
     fclose(outfile);
     free(file_path);
@@ -286,11 +312,16 @@ int main(int argc, char *argv[])
     //     print_usage(argv[0]);
     //     return 1;
     // }
-    params.verbose = false;
+    params.verbose = true;
     const char *filename = argv[optind];
     const char *output_dir = argv[optind + 1];
 
     // filename = "/data1/MIPLIB2017/selected/lp/neos-5041822-cockle.mps.gz"; 
+    // filename = "/data1/MIPLIB2017/selected/lp/app1-2.mps.gz"; 
+    // filename = "/data1/MIPLIB2017/selected/lp/physiciansched5-3.mps.gz"; 
+    filename = "/data1/MIPLIB2017/selected/lp/physiciansched6-1.mps.gz";
+
+    // physiciansched5-3
     // output_dir = "/home/sevan/cuPDLPx/test/active_test/";
 
     char *instance_name = extract_instance_name(filename);
@@ -308,8 +339,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // cupdlpx_result_t *result = optimize(&params, problem);
-    cupdlpx_result_t *result = optimize_with_adaptive_active_identify(&params, problem, 20, 0.5, 1e-8, 1000.00, true);
+    cupdlpx_result_t *result = optimize(&params, problem);
+    // cupdlpx_result_t *result = optimize_with_adaptive_active_identify(&params, problem, 20, 0.5, 1e-8, 1000.00, true);
+    // cupdlpx_result_t *optimize_two_stage(
+    // const pdhg_parameters_t *params,
+    // const lp_problem_t *original_problem,
+    // const double coarse_tol, 
+    // const double fine_tol, 
+    // bool verbose)
+    // params.restart_params.artificial_restart_threshold = 1000.0;
+    // cupdlpx_result_t *result = optimize_two_stage(&params, problem, 1e-4, 1e-8, 1000.00, true, true, true);
+    // cupdlpx_result_t *result = optimize_iterative_refinement(&params, problem, 2, 1e-8, true, true);
     if (result == NULL)
     {
         fprintf(stderr, "Solver failed.\n");

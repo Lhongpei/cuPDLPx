@@ -32,7 +32,8 @@ extern "C"
 		TERMINATION_REASON_DUAL_INFEASIBLE,
 		TERMINATION_REASON_TIME_LIMIT,
 		TERMINATION_REASON_ITERATION_LIMIT,
-		TERMINATION_REASON_FEAS_POLISH_SUCCESS
+		TERMINATION_REASON_FEAS_POLISH_SUCCESS,
+		TERMINATION_REASON_FEAS_POLISH_FAILED
 	} termination_reason_t;
 
 	typedef struct
@@ -95,6 +96,29 @@ extern "C"
 		double init_primal_weight_integral; //-1 for auto
 	} pdhg_parameters_t;
 
+	typedef enum
+	{
+		ACTIVE_SET_GLOBAL_OPTIMAL,
+		ACTIVE_SET_FALLBACK_ORIGINAL,
+		ACTIVE_SET_NO_START_ACTIVE_SET,
+		ACTIVE_SET_IN_PROGRESS,
+	} active_set_termination_reason_t;
+	
+	typedef struct
+	{
+		int *primal_active_times;
+		int *dual_active_times;
+		int update_active_times;
+		double *primal_mean;
+		double *dual_mean;
+		double *primal_sq_mean;
+		double *dual_sq_mean;
+		double *primal_oscillation;
+		double *dual_oscillation;
+		double *primal_residual_info;
+		double *dual_residual_info;
+	} pdhg_iteration_statistics_t;
+
 	typedef struct
 	{
 		int num_variables;
@@ -126,9 +150,11 @@ extern "C"
 		double primal_weight;
 		double primal_weight_integral;
 
-		int *primal_active_times;
-		int *dual_active_times;
-		int update_acitve_times;
+		pdhg_iteration_statistics_t *iteration_stats;
+
+		bool has_adaptive_active_set;
+		int adaptive_iteration;
+		active_set_termination_reason_t active_set_termination_reason;
 	} cupdlpx_result_t;
 
 	// matrix formats

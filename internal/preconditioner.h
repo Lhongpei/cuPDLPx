@@ -27,6 +27,13 @@ extern "C"
         const pdhg_parameters_t *params,
         const lp_problem_t *original_problem);
 
+    rescale_info_t *rescale_problem_with_input_norm(
+        const pdhg_parameters_t *params,
+        const lp_problem_t *original_problem,
+        const double *input_row_norm,
+        const double *input_col_norm
+    );
+
 #ifdef __cplusplus
 }
 #endif

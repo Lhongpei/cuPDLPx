@@ -27,8 +27,11 @@ extern "C"
         const pdhg_parameters_t *params,
         const lp_problem_t *original_problem,
         const double coarse_tol, // e.g., 1e-4
-        const double fine_tol,   // e.g., 1e-8
-        bool verbose);
+        const double fine_tol,  
+        const double time_limit,
+        const bool oscillation_based_scaling,
+        bool verbose,
+        bool inner_verbose);
     typedef struct {
         int  orig_n;
         int  orig_m;

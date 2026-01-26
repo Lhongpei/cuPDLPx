@@ -1087,22 +1087,6 @@ void check_feas_polishing_termination_criteria(
     }
 }
 
-void print_initial_feas_polish_info(bool is_primal_polish, const pdhg_parameters_t *params)
-{
-    if (!params->verbose)
-    {
-        return;
-    }
-    printf("---------------------------------------------------------------------------------------\n");
-    printf("Starting %s Feasibility Polishing Phase with relative tolerance %.2e\n",
-           is_primal_polish ? "Primal" : "Dual",
-           params->termination_criteria.eps_feas_polish_relative);
-    printf("---------------------------------------------------------------------------------------\n");
-    if (is_primal_polish) printf("%s %s |  %s  | %s | %s \n",  "  iter", "  time ", "pr obj", " abs pr res ", " rel pr res ");
-    // else printf("%s %s | %s | %s \n",  "  iter", "  time ", " abs du res ", " rel du res ");
-    else printf("%s %s |  %s  | %s | %s \n", "  iter", "  time ", "du obj", " abs du res ", " rel du res ");  
-    printf("---------------------------------------------------------------------------------------\n");
-}
 
 void pdhg_feas_polish_final_log(const pdhg_solver_state_t *primal_state, const pdhg_solver_state_t *dual_state, bool verbose)
 {
@@ -1122,35 +1106,70 @@ void pdhg_feas_polish_final_log(const pdhg_solver_state_t *primal_state, const p
     printf("  Primal Dual Gap      : %.3e\n", fabs(primal_state->primal_objective_value - dual_state->dual_objective_value) / (1.0 + fabs(primal_state->primal_objective_value) + fabs(dual_state->dual_objective_value)));
 }
 
-void display_feas_polish_iteration_stats(const pdhg_solver_state_t *state, bool verbose,  bool is_primal_polish)
+void print_initial_feas_polish_info(bool is_primal_polish, const pdhg_parameters_t *params)
+{
+    if (!params->verbose)
+    {
+        return;
+    }
+    printf("---------------------------------------------------------------------------------------\n");
+    printf("Starting %s Feasibility Polishing Phase with relative tolerance %.2e\n",
+           is_primal_polish ? "Primal" : "Dual",
+           params->termination_criteria.eps_feas_polish_relative);
+    printf("---------------------------------------------------------------------------------------\n");
+
+    if (is_primal_polish)
+    {
+        printf("%6s %7s | %8s | %10s | %10s | %10s | %10s \n", 
+               "iter", "time", "pr obj", "abs pr res", "rel pr res", "abs gap", "rel gap");
+    }
+    else 
+    {
+        // Added Gap headers to Dual case
+        printf("%6s %7s | %8s | %10s | %10s | %10s | %10s \n", 
+               "iter", "time", "du obj", "abs du res", "rel du res", "abs gap", "rel gap");  
+    }
+    printf("---------------------------------------------------------------------------------------\n");
+}
+
+void display_feas_polish_iteration_stats(const pdhg_solver_state_t *state, bool verbose, bool is_primal_polish)
 {
     if (!verbose)
     {
         return;
     }
+    
     if (state->total_count % get_print_frequency(state->total_count) == 0)
     {
         if (is_primal_polish)
         {
-            printf("%6d %.1e | %8.1e |    %.1e   |   %.1e   \n",
+            printf("%6d %.1e | %8.1e | %10.1e | %10.1e | %10.1e | %10.1e \n",
                 state->total_count,
                 state->cumulative_time_sec,
                 state->primal_objective_value,
                 state->absolute_primal_residual,
-                state->relative_primal_residual);
+                state->relative_primal_residual,
+                state->objective_gap,
+                state->relative_objective_gap
+            );
         }
         else
         {
-            printf("%6d %.1e | %8.1e |    %.1e   |   %.1e   \n",
+            // Added Gap variables to Dual case
+            printf("%6d %.1e | %8.1e | %10.1e | %10.1e | %10.1e | %10.1e \n",
                 state->total_count,
                 state->cumulative_time_sec,
                 state->dual_objective_value,
                 state->absolute_dual_residual,
-                state->relative_dual_residual);
+                state->relative_dual_residual,
+                state->objective_gap,           // Added
+                state->relative_objective_gap   // Added
+            );
         }
     }
-
 }
+
+
 
 __global__ void compute_primal_feas_polish_residual_kernel(
     double *primal_residual,
@@ -1196,7 +1215,7 @@ __global__ void compute_dual_feas_polish_residual_kerenl(
     }
 }
 
-void compute_primal_feas_polish_residual(pdhg_solver_state_t *state, const pdhg_solver_state_t *ori_state)
+void compute_primal_feas_polish_residual(pdhg_solver_state_t *state, const double *objective_vector)
 {
     cusparseDnVecSetValues(state->vec_primal_sol, state->pdhg_primal_solution);
     cusparseDnVecSetValues(state->vec_primal_prod, state->primal_product);
@@ -1212,11 +1231,15 @@ void compute_primal_feas_polish_residual(pdhg_solver_state_t *state, const pdhg_
     state->absolute_primal_residual /= state->constraint_bound_rescaling;
     state->relative_primal_residual = state->absolute_primal_residual / (1.0 + state->constraint_bound_norm);
 
-    CUBLAS_CHECK(cublasDdot(state->blas_handle, state->num_variables, ori_state->objective_vector, 1, state->pdhg_primal_solution, 1, &state->primal_objective_value));
+    CUBLAS_CHECK(cublasDdot(state->blas_handle, state->num_variables, objective_vector, 1, state->pdhg_primal_solution, 1, &state->primal_objective_value));
     state->primal_objective_value = state->primal_objective_value / (state->constraint_bound_rescaling * state->objective_vector_rescaling) + state->objective_constant;
+    state->objective_gap = fabs(state->primal_objective_value - state->dual_objective_value);
+    state->relative_objective_gap = state->objective_gap / (1.0 + fabs(state->primal_objective_value) + fabs(state->dual_objective_value));
 }
 
-void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, const pdhg_solver_state_t *ori_state)
+void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, const double* constraint_lower_bound_finite_val, 
+                                         const double* constraint_upper_bound_finite_val,
+                                         const double* primal_solution)
 {
     cusparseDnVecSetValues(state->vec_dual_sol, state->pdhg_dual_solution);
     cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product);
@@ -1230,8 +1253,8 @@ void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, const pdhg_so
         state->dual_slack, state->objective_vector,
         state->variable_rescaling,
         state->primal_slack,
-        ori_state->constraint_lower_bound_finite_val,
-        ori_state->constraint_upper_bound_finite_val,
+        constraint_lower_bound_finite_val,
+        constraint_upper_bound_finite_val,
         state->num_variables, state->num_constraints
     );
 
@@ -1240,7 +1263,9 @@ void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, const pdhg_so
     state->relative_dual_residual = state->absolute_dual_residual / (1.0 + state->objective_vector_norm);
 
     double base_dual_objective;
-    CUBLAS_CHECK(cublasDdot(state->blas_handle, state->num_variables, state->dual_slack, 1, ori_state->pdhg_primal_solution, 1, &base_dual_objective));
+    CUBLAS_CHECK(cublasDdot(state->blas_handle, state->num_variables, state->dual_slack, 1, primal_solution, 1, &base_dual_objective));
     double dual_slack_sum = get_vector_sum(state->blas_handle, state->num_constraints, state->ones_dual_d, state->primal_slack);
     state->dual_objective_value = (base_dual_objective + dual_slack_sum) / (state->constraint_bound_rescaling * state->objective_vector_rescaling) + state->objective_constant;
+    state->objective_gap = fabs(state->primal_objective_value - state->dual_objective_value);
+    state->relative_objective_gap = state->objective_gap / (1.0 + fabs(state->primal_objective_value) + fabs(state->dual_objective_value));
 }
