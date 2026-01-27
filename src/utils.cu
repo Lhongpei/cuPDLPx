@@ -389,13 +389,15 @@ void print_initial_info(const pdhg_parameters_t *params,
     }
     printf("---------------------------------------------------------------------"
            "------------------\n");
-    printf("                                    cuPDLPx v%s                      "
-           "              \n",
-           CUPDLPX_VERSION);
-    printf("                        A GPU-Accelerated First-Order LP Solver      "
+    printf("                                   D-PDLP v%s                      "
+           "                  \n",
+           "0.0.1");
+    printf("             A First-Order LP Solver Powered by Multiple GPU System  "
            "                  \n");
-    printf("               (c) Haihao Lu, Massachusetts Institute of Technology, "
-           "2025              \n");
+    printf("                               (c) Hongpei Li, 2026                    "
+           "                  \n");
+    printf("                      Based on cuPDLPx by Haihao Lu, MIT (2025)             "
+           "                  \n");
     printf("---------------------------------------------------------------------"
            "------------------\n");
 

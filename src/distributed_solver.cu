@@ -23,7 +23,7 @@ limitations under the License.
 #include "preconditioner.h"
 #include "presolve.h"
 #include "solver.h"
-#include "core_operation.h"
+#include "pdlp_core_op.h"
 #include "utils.h"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -209,8 +209,6 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
     compute_residual_distributed(state, params->optimality_norm);
     MPI_Barrier(grid_context->comm_global);
     
-    bool fuse_halpern = params->reflection_coefficient == 1.0;
-    if (fuse_halpern && params->verbose) printf("Halpern update is fused in primal dual update!\n");
     double start_time = MPI_Wtime();
     bool do_restart = false;
     while (state->total_count < params->termination_criteria.iteration_limit)
@@ -249,15 +247,8 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
             ((state->total_count + 1) % params->termination_evaluation_frequency) ==
             0;
 
-        if (fuse_halpern){
-            compute_next_pdhg_primal_solution_distributed_fuse_halpern(state);
-            compute_next_pdhg_dual_solution_distributed_fuse_halpern(state);
-        }
-        else
-        {
-            compute_next_pdhg_primal_solution_distributed(state);
-            compute_next_pdhg_dual_solution_distributed(state);
-        }
+        compute_next_pdhg_primal_solution_distributed(state);
+        compute_next_pdhg_dual_solution_distributed(state);
 
         if (state->is_this_major_iteration || do_restart)
         {
@@ -269,7 +260,7 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
             }
         }
 
-        if (!fuse_halpern) halpern_update(state, params->reflection_coefficient);
+        halpern_update(state, params->reflection_coefficient);
 
         state->inner_count++;
         state->total_count++;
@@ -278,7 +269,7 @@ static cupdlpx_result_t *distributed_optimize_core(const pdhg_parameters_t *para
     if (state->termination_reason == TERMINATION_REASON_UNSPECIFIED)
     {
         state->termination_reason = TERMINATION_REASON_ITERATION_LIMIT;
-        compute_residual(state, params->optimality_norm);
+        compute_residual_distributed(state, params->optimality_norm);
         display_iteration_stats(state, params->verbose);
     }
     cupdlpx_result_t *result = NULL;

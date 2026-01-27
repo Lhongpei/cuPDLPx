@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#include "core_operation.h"
+#include "pdlp_core_op.h"
 #include "cupdlpx.h"
 #include "internal_types.h"
 #include "preconditioner.h"

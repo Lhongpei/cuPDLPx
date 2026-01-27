@@ -153,7 +153,33 @@ extern "C"
                              const double *x_d);
     double get_vector_inf_norm(cublasHandle_t handle, int n,
                                   const double *x_d);
-
+    
+    __global__ void primal_infeasibility_project_kernel(
+        double *primal_ray_estimate, const double *variable_lower_bound,
+        const double *variable_upper_bound, int num_variables);
+    __global__ void dual_infeasibility_project_kernel(
+        double *dual_ray_estimate, const double *constraint_lower_bound,
+        const double *constraint_upper_bound, int num_constraints);
+    __global__ void compute_dual_infeasibility_kernel(const double *dual_product,
+                                    const double *var_lb, const double *var_ub,
+                                    int num_variables, double *dual_infeasibility,
+                                  const double *variable_rescaling);
+    __global__ void dual_solution_dual_objective_contribution_kernel(
+        const double *constraint_lower_bound_finite_val,
+        const double *constraint_upper_bound_finite_val,
+        const double *dual_solution, int num_constraints,
+        double *dual_objective_dual_solution_contribution_array);
+    
+    __global__ void dual_objective_dual_slack_contribution_array_kernel(
+        const double *dual_slack,
+        double *dual_objective_dual_slack_contribution_array,
+        const double *variable_lower_bound_finite_val,
+        const double *variable_upper_bound_finite_val, int num_variables);
+        
+    __global__ void compute_primal_infeasibility_kernel(
+        const double *primal_product, const double *const_lb,
+        const double *const_ub, int num_constraints, double *primal_infeasibility,
+        const double *constraint_rescaling);
 #ifdef __cplusplus
 }
 

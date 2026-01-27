@@ -1,7 +1,7 @@
 #include "cupdlpx.h"
 #include "nccl.h"
 #include "distributed_op.h"
-#include "core_operation.h"
+#include "pdlp_core_op.h"
 #include "distribution_utils.h"
 #include "internal_types.h"
 #include "preconditioner.h"
@@ -107,125 +107,6 @@ void compute_next_pdhg_dual_solution_distributed(pdhg_solver_state_t *state)
             state->current_dual_solution, state->reflected_dual_solution,
             state->primal_product, state->constraint_lower_bound,
             state->constraint_upper_bound, state->num_constraints, step);
-    }
-}
-
-void compute_next_pdhg_primal_solution_distributed_fuse_halpern(pdhg_solver_state_t *state)
-{
-    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_dual_sol,
-                                          state->current_dual_solution));
-    CUSPARSE_CHECK(
-        cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product));
-    
-    CUSPARSE_CHECK(cusparseSpMV(
-        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
-        state->matAt, state->vec_dual_sol, &HOST_ZERO, state->vec_dual_prod,
-        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->dual_spmv_buffer));
-
-    NCCL_CHECK(ncclAllReduce(
-        (const void *)state->dual_product, 
-        (void *)state->dual_product,      
-        state->num_variables,              
-        ncclDouble,                   
-        ncclSum,                         
-        state->grid_context->nccl_col,    
-        0                                
-    ));
-
-    double step = state->step_size / state->primal_weight;
-    double weight = (double)(state->inner_count + 1) / (state->inner_count + 2);
-
-    if (state->is_this_major_iteration ||
-        ((state->total_count + 2) %
-         get_print_frequency(state->total_count + 2)) == 0)
-    {
-        compute_fused_primal_major_halpern_kernel<<<state->num_blocks_primal,
-                                                    THREADS_PER_BLOCK>>>(
-            state->current_primal_solution,   
-            state->pdhg_primal_solution,      
-            state->reflected_primal_solution,
-            state->initial_primal_solution,  
-            state->dual_product,
-            state->objective_vector,
-            state->variable_lower_bound,
-            state->variable_upper_bound,
-            state->num_variables,
-            step,
-            state->dual_slack,
-            weight);
-    }
-    else
-    {
-        compute_fused_primal_halpern_kernel<<<state->num_blocks_primal,
-                                              THREADS_PER_BLOCK>>>(
-            state->current_primal_solution,  
-            state->reflected_primal_solution, 
-            state->initial_primal_solution,  
-            state->dual_product,
-            state->objective_vector,
-            state->variable_lower_bound,
-            state->variable_upper_bound,
-            state->num_variables,
-            step,
-            weight);
-    }
-}
-
-void compute_next_pdhg_dual_solution_distributed_fuse_halpern(pdhg_solver_state_t *state)
-{
-    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_sol,
-                                          state->reflected_primal_solution));
-    CUSPARSE_CHECK(
-        cusparseDnVecSetValues(state->vec_primal_prod, state->primal_product));
-
-    CUSPARSE_CHECK(cusparseSpMV(
-        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
-        state->matA, state->vec_primal_sol, &HOST_ZERO, state->vec_primal_prod,
-        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->primal_spmv_buffer));
-
-    NCCL_CHECK(ncclAllReduce(
-        (const void *)state->primal_product, 
-        (void *)state->primal_product,
-        state->num_constraints,
-        ncclDouble,
-        ncclSum,
-        state->grid_context->nccl_row,
-        0
-    ));
-
-    double step = state->step_size * state->primal_weight;
-    double weight = (double)(state->inner_count + 1) / (state->inner_count + 2);
-
-    if (state->is_this_major_iteration ||
-        ((state->total_count + 2) %
-         get_print_frequency(state->total_count + 2)) == 0)
-    {
-        compute_fused_dual_major_halpern_kernel<<<state->num_blocks_dual,
-                                                  THREADS_PER_BLOCK>>>(
-            state->current_dual_solution,     
-            state->pdhg_dual_solution,      
-            state->reflected_dual_solution,   
-            state->initial_dual_solution,    
-            state->primal_product,
-            state->constraint_lower_bound,
-            state->constraint_upper_bound,
-            state->num_constraints,
-            step,
-            weight);
-    }
-    else
-    {
-        compute_fused_dual_halpern_kernel<<<state->num_blocks_dual,
-                                            THREADS_PER_BLOCK>>>(
-            state->current_dual_solution,    
-            state->reflected_dual_solution,   
-            state->initial_dual_solution,   
-            state->primal_product,
-            state->constraint_lower_bound,
-            state->constraint_upper_bound,
-            state->num_constraints,
-            step,
-            weight);
     }
 }
 
@@ -495,3 +376,130 @@ void compute_residual_distributed(pdhg_solver_state_t *state, norm_type_t optima
                                 fabs(state->dual_objective_value));
 }
 
+
+void compute_infeasibility_information_distributed(pdhg_solver_state_t *state)
+{
+    primal_infeasibility_project_kernel<<<state->num_blocks_primal,
+                                          THREADS_PER_BLOCK>>>(
+        state->delta_primal_solution, state->variable_lower_bound,
+        state->variable_upper_bound, state->num_variables);
+    dual_infeasibility_project_kernel<<<state->num_blocks_dual,
+                                        THREADS_PER_BLOCK>>>(
+        state->delta_dual_solution, state->constraint_lower_bound,
+        state->constraint_upper_bound, state->num_constraints);
+
+    double local_primal_ray_inf_norm = get_vector_inf_norm(
+        state->blas_handle, state->num_variables, state->delta_primal_solution);
+    double global_primal_ray_inf_norm = 0.0;
+    MPI_Allreduce(&local_primal_ray_inf_norm, &global_primal_ray_inf_norm, 1, MPI_DOUBLE, MPI_MAX, state->grid_context->comm_row);
+
+    if (global_primal_ray_inf_norm > 0.0)
+    {
+        double scale = 1.0 / global_primal_ray_inf_norm;
+        cublasDscal(state->blas_handle, state->num_variables, &scale,
+                    state->delta_primal_solution, 1);
+    }
+
+    double local_dual_ray_inf_norm = get_vector_inf_norm(
+        state->blas_handle, state->num_constraints, state->delta_dual_solution);
+    double dual_ray_inf_norm = 0.0;
+    MPI_Allreduce(&local_dual_ray_inf_norm, &dual_ray_inf_norm, 1, MPI_DOUBLE, MPI_MAX, state->grid_context->comm_col);
+
+    CUSPARSE_CHECK(cusparseDnVecSetValues(state->vec_primal_sol,
+                                          state->delta_primal_solution));
+    CUSPARSE_CHECK(
+        cusparseDnVecSetValues(state->vec_dual_sol, state->delta_dual_solution));
+    CUSPARSE_CHECK(
+        cusparseDnVecSetValues(state->vec_primal_prod, state->primal_product));
+    CUSPARSE_CHECK(
+        cusparseDnVecSetValues(state->vec_dual_prod, state->dual_product));
+
+    CUSPARSE_CHECK(cusparseSpMV(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
+        state->matA, state->vec_primal_sol, &HOST_ZERO, state->vec_primal_prod,
+        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->primal_spmv_buffer));
+
+    CUSPARSE_CHECK(cusparseSpMV(
+        state->sparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &HOST_ONE,
+        state->matAt, state->vec_dual_sol, &HOST_ZERO, state->vec_dual_prod,
+        CUDA_R_64F, CUSPARSE_SPMV_CSR_ALG2, state->dual_spmv_buffer));
+
+    NCCL_CHECK(ncclAllReduce((const void *)state->primal_product,
+                             (void *)state->primal_product,
+                             state->num_constraints, ncclDouble, ncclSum,
+                             state->grid_context->nccl_row, 0));
+    
+    NCCL_CHECK(ncclAllReduce((const void *)state->dual_product,
+                             (void *)state->dual_product,
+                             state->num_variables, ncclDouble, ncclSum,
+                             state->grid_context->nccl_col, 0));
+
+    double local_primal_ray_linear_objective = 0.0;
+    CUBLAS_CHECK(cublasDdot(
+        state->blas_handle, state->num_variables, state->objective_vector, 1,
+        state->delta_primal_solution, 1, &local_primal_ray_linear_objective));
+    local_primal_ray_linear_objective /=
+        (state->constraint_bound_rescaling * state->objective_vector_rescaling);
+    MPI_Allreduce(&local_primal_ray_linear_objective, &state->primal_ray_linear_objective, 1, MPI_DOUBLE, MPI_SUM, state->grid_context->comm_row);
+
+    dual_solution_dual_objective_contribution_kernel<<<state->num_blocks_dual,
+                                                       THREADS_PER_BLOCK>>>(
+        state->constraint_lower_bound_finite_val,
+        state->constraint_upper_bound_finite_val, state->delta_dual_solution,
+        state->num_constraints, state->primal_slack);
+
+    dual_objective_dual_slack_contribution_array_kernel<<<
+        state->num_blocks_primal, THREADS_PER_BLOCK>>>(
+        state->dual_product, state->dual_slack,
+        state->variable_lower_bound_finite_val,
+        state->variable_upper_bound_finite_val, state->num_variables);
+
+    double sum_primal_slack = 0.0;
+    double sum_dual_slack = 0.0;
+    double local_sum_primal_slack =
+        get_vector_sum(state->blas_handle, state->num_constraints,
+                       state->ones_dual_d, state->primal_slack);
+    double local_sum_dual_slack =
+        get_vector_sum(state->blas_handle, state->num_variables,
+                       state->ones_primal_d, state->dual_slack);
+    MPI_Allreduce(&local_sum_primal_slack, &sum_primal_slack, 1, MPI_DOUBLE, MPI_SUM, state->grid_context->comm_col);
+    MPI_Allreduce(&local_sum_dual_slack, &sum_dual_slack, 1, MPI_DOUBLE, MPI_SUM, state->grid_context->comm_row);
+
+    state->dual_ray_objective =
+        (sum_primal_slack + sum_dual_slack) /
+        (state->constraint_bound_rescaling * state->objective_vector_rescaling);
+
+    compute_primal_infeasibility_kernel<<<state->num_blocks_dual,
+                                          THREADS_PER_BLOCK>>>(
+        state->primal_product, state->constraint_lower_bound,
+        state->constraint_upper_bound, state->num_constraints,
+        state->primal_slack, state->constraint_rescaling);
+    compute_dual_infeasibility_kernel<<<state->num_blocks_primal,
+                                        THREADS_PER_BLOCK>>>(
+        state->dual_product, state->variable_lower_bound,
+        state->variable_upper_bound, state->num_variables, state->dual_slack,
+        state->variable_rescaling);
+
+    double primal_slack_norm = 0.0;
+    double dual_slack_norm = 0.0;
+    double local_primal_slack_norm = get_vector_inf_norm(
+        state->blas_handle, state->num_constraints, state->primal_slack);
+    double local_dual_slack_norm = get_vector_inf_norm(
+        state->blas_handle, state->num_variables, state->dual_slack);
+    MPI_Allreduce(&local_primal_slack_norm, &primal_slack_norm, 1, MPI_DOUBLE, MPI_MAX, state->grid_context->comm_row);
+    MPI_Allreduce(&local_dual_slack_norm, &dual_slack_norm, 1, MPI_DOUBLE, MPI_MAX, state->grid_context->comm_col);
+
+    state->max_dual_ray_infeasibility = dual_slack_norm;
+    state->max_primal_ray_infeasibility = primal_slack_norm;
+    double scaling_factor = fmax(dual_ray_inf_norm, dual_slack_norm);
+    if (scaling_factor > 0.0)
+    {
+        state->max_dual_ray_infeasibility /= scaling_factor;
+        state->dual_ray_objective /= scaling_factor;
+    }
+    else
+    {
+        state->max_dual_ray_infeasibility = 0.0;
+        state->dual_ray_objective = 0.0;
+    }
+}

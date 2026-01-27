@@ -186,7 +186,8 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright 2025 Haihao Lu
+   Copyright (c) 2025, Hongpei Li (Modifications for Dist-cuPDLPx)
+   Copyright 2025 Haihao Lu (Original cuPDLPx code)
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
