@@ -7,14 +7,20 @@ set(CMAKE_CUDA_COMPILER "/usr/local/cuda-12.6/bin/nvcc" CACHE FILEPATH "CUDA Com
 option(ENABLE_MPI "Enable distributed computing with MPI" ON)
 
 
-project(cupdlpx LANGUAGES C CXX CUDA)
+project(cupdlpx-dist LANGUAGES C CXX CUDA)
 
 set(CUPDLPX_VERSION_MAJOR 0)
 set(CUPDLPX_VERSION_MINOR 2)
 set(CUPDLPX_VERSION_PATCH 2)
+set(CUPDLPX_DIST_VERSION_MAJOR 0)
+set(CUPDLPX_DIST_VERSION_MINOR 0)
+set(CUPDLPX_DIST_VERSION_PATCH 1)
 
 set(CUPDLPX_VERSION "${CUPDLPX_VERSION_MAJOR}.${CUPDLPX_VERSION_MINOR}.${CUPDLPX_VERSION_PATCH}")
 add_compile_definitions(CUPDLPX_VERSION="${CUPDLPX_VERSION}")
+
+set(CUPDLPX_DIST_VERSION "${CUPDLPX_DIST_VERSION_MAJOR}.${CUPDLPX_DIST_VERSION_MINOR}.${CUPDLPX_DIST_VERSION_PATCH}")
+add_compile_definitions(CUPDLPX_DIST_VERSION="${CUPDLPX_DIST_VERSION}")
 
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 
@@ -177,7 +183,7 @@ if(CUPDLPX_BUILD_SHARED_LIB)
 
     # Shared library must resolve device symbols as it is a final link point
     set_target_properties(cupdlpx_shared PROPERTIES
-        OUTPUT_NAME "cupdlpx"
+        OUTPUT_NAME "cupdlpx-dist"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -185,7 +191,7 @@ if(CUPDLPX_BUILD_SHARED_LIB)
 endif()
 
 # -----------------------------------------------------------------------------
-# 3. CLI Executable (cupdlpx)
+# 3. CLI Executable (cupdlpx-dist)
 # -----------------------------------------------------------------------------
 if(CUPDLPX_BUILD_CLI)
     if(NOT TARGET cupdlpx_core)
@@ -204,7 +210,7 @@ if(CUPDLPX_BUILD_CLI)
 
     # CLI is a final executable, it must resolve device symbols
     set_target_properties(cupdlpx_cli PROPERTIES
-        OUTPUT_NAME "cupdlpx"
+        OUTPUT_NAME "cupdlpx-dist"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )

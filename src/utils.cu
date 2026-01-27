@@ -22,6 +22,11 @@ limitations under the License.
 #define CUPDLPX_VERSION "unknown"
 #endif
 
+
+#ifndef CUPDLPX_DIST_VERSION
+#define CUPDLPX_DIST_VERSION "unknown"
+#endif
+
 std::mt19937 gen(1);
 std::normal_distribution<double> dist(0.0, 1.0);
 
@@ -389,15 +394,19 @@ void print_initial_info(const pdhg_parameters_t *params,
     }
     printf("---------------------------------------------------------------------"
            "------------------\n");
-    printf("                                   D-PDLP v%s                      "
-           "                  \n",
-           "0.0.1");
-    printf("             A First-Order LP Solver Powered by Multiple GPU System  "
+    printf("                                     D-PDLP                              "
            "                  \n");
-    printf("                               (c) Hongpei Li, 2026                    "
+    printf("             A First-Order LP Solver Powered by Multiple GPU System      "
            "                  \n");
-    printf("                      Based on cuPDLPx by Haihao Lu, MIT (2025)             "
+    printf("                              (c) Hongpei Li, 2026                         "
            "                  \n");
+    printf("                          Contact: ishongpeili@gmail.com                    "
+           "                  \n");
+    printf("                                                                         "
+           "                  \n");
+    printf("   Based on cuPDLPx by Haihao Lu, MIT (2025): https://github.com/MIT-Lu-Lab/cuPDLPx  "
+           "\n");
+
     printf("---------------------------------------------------------------------"
            "------------------\n");
 
