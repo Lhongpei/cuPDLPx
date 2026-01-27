@@ -2,8 +2,10 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2601.07628-B31B1B.svg)](https://arxiv.org/pdf/2601.07628)
-**D-PDLP** (Distributed PDLP) is a way to implement distributed Primal Dual Hybrid Gradient for solving huge scale linear program on multiple GPU system. It rely on 2D Grid Partitioning to scale PDHG to multi-GPU clusters, enabling the solution of massive-scale LP instances and harness power of multiple GPU. In the repo, D-PDLP is implemented based on [cuPDLPx](https://github.com/Lhongpei/cuPDLPx), suggested in https://arxiv.org/abs/2507.14051.
 
+**D-PDLP** (Distributed PDLP) is a high-performance, distributed implementation of the Primal-Dual Hybrid Gradient (PDHG) algorithm designed for solving massive-scale Linear Programming (LP) problems on multi-GPU systems.
+
+By leveraging 2D Grid Partitioning, D-PDLP scales the first-order PDHG method across GPU clusters, efficiently harnessing the aggregate computational power and memory of multiple devices. This implementation is built upon [cuPDLPx](https://github.com/Lhongpei/cuPDLPx), a GPU-accelerated LP solver described in suggested in [cuPDLPx: A Further Enhanced GPU-Based First-Order Solver for Linear Programming](https://arxiv.org/abs/2507.14051).
 Same with cuPDLPx, D-PDLP solves linear programs of the form
 ```math
 \begin{aligned}
@@ -17,6 +19,18 @@ Same with cuPDLPx, D-PDLP solves linear programs of the form
 For a detailed explanation of the methodology, please refer to our paper: [Beyond Single-GPU: Scaling PDLP to Distributed Multi-GPU Systems](https://arxiv.org/pdf/2601.07628).
 
 ---
+
+## Problem Formulation
+
+Consistent with cuPDLPx, D-PDLP solves linear programs in the standard form:
+
+```math
+\begin{aligned}
+\min_{x} \quad & c^\top x \\
+\text{s.t.} \quad & \ell_c \le Ax \le u_c, \\
+                  & \ell_v \le x \le u_v.
+\end{aligned}
+```
 
 ## Installation
 
@@ -55,7 +69,7 @@ Run the solver directly without MPI to use a single GPU.
 Use `mpirun` to launch the solver across multiple GPUs.
 
 ```bash
-mpirun -n <NGPU> ./build/cupdlpx-dist <MPS_FILE> <OUTPUT_DIR> [OPTIONS]
+mpirun -n <NUM_GPU> ./build/cupdlpx-dist <MPS_FILE> <OUTPUT_DIR> [OPTIONS]
 
 ```
 
@@ -65,13 +79,13 @@ mpirun -n <NGPU> ./build/cupdlpx-dist <MPS_FILE> <OUTPUT_DIR> [OPTIONS]
 
 1. `<MPS_FILE>`: Path to the input LP (supports `.mps` and `.mps.gz`).
 2. `<OUTPUT_DIR>`: Directory where solution files will be saved.
-
 **Distributed Options:**
+
 | Option | Type | Description | Default |
-| :--- | :--- | :--- |:--- |
-| `--grid_size <r>,<c>` | `string` | 2D Grid topology (Rows x Cols). `r*c` must equal MPI world size. | Auto-detect |
-| `--partition_method` | `string` | Partitioning strategy: `uniform` or `nnz` (NNZ Balance). | `nnz` |
-| `--permute_method` | `string` | Matrix permutation: `none`, `random`, or `block`. | `block` |
+| :--- | :--- | :--- | :--- |
+| `--grid_size <r>,<c>` | `string` | 2D Grid topology (Rows x Cols) | Auto-detect |
+| `--partition_method` | `string` | Partitioning strategy: `uniform` or `nnz`. | `nnz` |
+| `--permute_method` | `string` | Matrix permutation: `none`, `random`, or `block`. | `none` |
 
 **Solver Parameters:**
 | Option | Type | Description | Default |
