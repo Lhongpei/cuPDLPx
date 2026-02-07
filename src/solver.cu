@@ -113,8 +113,7 @@ cupdlpx_result_t *optimize(const pdhg_parameters_t *params,
             (state->total_count % get_print_frequency(state->total_count) == 0))
         {
             compute_residual(state);
-            if (state->is_this_major_iteration &&
-                state->total_count < 3 * params->termination_evaluation_frequency)
+            if (state->is_this_major_iteration)
             {
                 compute_infeasibility_information(state);
             }
@@ -138,10 +137,10 @@ cupdlpx_result_t *optimize(const pdhg_parameters_t *params,
         state->is_this_major_iteration =
             ((state->total_count + 1) % params->termination_evaluation_frequency) ==
             0;
-
+        // state->primal_weight = fmin(1e5, fmax(1e-5, state->primal_weight));
         compute_next_pdhg_primal_solution(state);
         compute_next_pdhg_dual_solution(state);
-        // update_iteration_stats(state);
+        update_iteration_stats(state);
 
         if (state->is_this_major_iteration || do_restart)
         {
@@ -1718,8 +1717,6 @@ __global__ void update_movement_stats_kernel(
     ema_diff[idx] = beta * ema_diff[idx] + (1.0 - beta) * diff;
     
     ema_abs[idx] = beta * ema_abs[idx] + (1.0 - beta) * fabs(diff);
-    
-    x_old[idx] = val;
 }
 
 static void update_iteration_stats(pdhg_solver_state_t *state)

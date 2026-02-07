@@ -264,7 +264,7 @@ cupdlpx_result_t *optimize_iterative_refinement(
         delta_P = fmax(delta_P, 1.0);
         delta_D = fmax(delta_D, 1.0);
 
-        double max_scale_limit = 1e6; 
+        double max_scale_limit = 1e7; 
         
         delta_P = fmin(delta_P, max_scale_limit);
         delta_D = fmin(delta_D, max_scale_limit);
@@ -306,8 +306,8 @@ cupdlpx_result_t *optimize_iterative_refinement(
         c_norm = sqrt(c_norm);
         pdhg_parameters_t sub_params = initial_params;
         sub_params.termination_criteria.eps_optimal_relative = 1e-3 ;
-        sub_params.termination_criteria.eps_feasible_relative = 0.01 / (1.0 + c_norm + b_norm);
-        sub_params.termination_criteria.time_sec_limit = 30.0; 
+        sub_params.termination_criteria.eps_feasible_relative = 1e-8;
+        sub_params.termination_criteria.time_sec_limit = 1200.0; 
         sub_params.restart_params.artificial_restart_threshold = 0.4;
 
         cupdlpx_result_t *sub_res = optimize(&sub_params, sub_lp);

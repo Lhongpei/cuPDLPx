@@ -477,12 +477,12 @@ void display_iteration_stats(const pdhg_solver_state_t *state, bool verbose)
     }
     if (state->total_count % get_print_frequency(state->total_count) == 0)
     {
-        printf("%6d %.1e | %8.1e  %8.1e | %.1e %.1e %.1e | %.1e %.1e %.1e \n",
+        printf("%6d %.1e | %8.1e  %8.1e | %.1e %.1e %.1e | %.1e %.1e %.1e ｜ %.1e %.1e \n",
                state->total_count, state->cumulative_time_sec,
                state->primal_objective_value, state->dual_objective_value,
                state->absolute_primal_residual, state->absolute_dual_residual,
                state->objective_gap, state->relative_primal_residual,
-               state->relative_dual_residual, state->relative_objective_gap);
+               state->relative_dual_residual, state->relative_objective_gap, state->step_size, state->primal_weight);
     }
 }
 

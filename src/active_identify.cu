@@ -437,11 +437,11 @@ static void mark_oscillating_variables(
         double ratio = fabs(trend) / path;
         
         if (ratio < THRESHOLD_OSC) {
-            norm[j] = 2.0; 
+            norm[j] = 5.0; 
             is_scaling[j] = true;
         } 
         else if (ratio > THRESHOLD_TREND) {
-            norm[j] = 0.5; 
+            norm[j] = 0.2; 
             is_scaling[j] = true;
         } 
         else {

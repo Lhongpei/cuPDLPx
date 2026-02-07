@@ -312,14 +312,14 @@ int main(int argc, char *argv[])
     //     print_usage(argv[0]);
     //     return 1;
     // }
-    params.verbose = true;
+    params.verbose = false;
     const char *filename = argv[optind];
     const char *output_dir = argv[optind + 1];
 
     // filename = "/data1/MIPLIB2017/selected/lp/neos-5041822-cockle.mps.gz"; 
     // filename = "/data1/MIPLIB2017/selected/lp/app1-2.mps.gz"; 
-    // filename = "/data1/MIPLIB2017/selected/lp/physiciansched5-3.mps.gz"; 
-    filename = "/data1/MIPLIB2017/selected/lp/physiciansched6-1.mps.gz";
+    filename = "/data1/MIPLIB2017/selected/lp/physiciansched5-3.mps.gz"; 
+    // filename = "/data1/MIPLIB2017/selected/lp/physiciansched6-1.mps.gz";
 
     // physiciansched5-3
     // output_dir = "/home/sevan/cuPDLPx/test/active_test/";
@@ -339,7 +339,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    cupdlpx_result_t *result = optimize(&params, problem);
+    // cupdlpx_result_t *result = optimize(&params, problem);
     // cupdlpx_result_t *result = optimize_with_adaptive_active_identify(&params, problem, 20, 0.5, 1e-8, 1000.00, true);
     // cupdlpx_result_t *optimize_two_stage(
     // const pdhg_parameters_t *params,
@@ -348,8 +348,8 @@ int main(int argc, char *argv[])
     // const double fine_tol, 
     // bool verbose)
     // params.restart_params.artificial_restart_threshold = 1000.0;
-    // cupdlpx_result_t *result = optimize_two_stage(&params, problem, 1e-4, 1e-8, 1000.00, true, true, true);
-    // cupdlpx_result_t *result = optimize_iterative_refinement(&params, problem, 2, 1e-8, true, true);
+    // cupdlpx_result_t *result = optimize_two_stage(&params, problem, 1e-4, 1e-8, 1000.00, true, true, false);
+    cupdlpx_result_t *result = optimize_iterative_refinement(&params, problem, 20, 1e-8, true, true);
     if (result == NULL)
     {
         fprintf(stderr, "Solver failed.\n");
