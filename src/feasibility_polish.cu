@@ -92,6 +92,10 @@ void feasibility_polish(const pdhg_parameters_t *params, pdhg_solver_state_t *st
         state->primal_objective_value = primal_state->primal_objective_value;
     }
     state->feasibility_iteration += primal_state->total_count - 1;
+    state->primal_polish_iterations = primal_state->total_count - 1;
+    state->primal_polish_time_sec = primal_state->cumulative_time_sec;
+    state->primal_polish_termination = primal_state->termination_reason;
+    state->primal_polish_residual = state->relative_primal_residual;
 
     // DUAL FEASIBILITY POLISHING
     pdhg_solver_state_t *dual_state = initialize_dual_feas_polish_state(state);
@@ -110,10 +114,15 @@ void feasibility_polish(const pdhg_parameters_t *params, pdhg_solver_state_t *st
         state->dual_objective_value = dual_state->dual_objective_value;
     }
     state->feasibility_iteration += dual_state->total_count - 1;
+    state->dual_polish_iterations = dual_state->total_count - 1;
+    state->dual_polish_time_sec = dual_state->cumulative_time_sec;
+    state->dual_polish_termination = dual_state->termination_reason;
+    state->dual_polish_residual = state->relative_dual_residual;
 
     state->objective_gap = fabs(state->primal_objective_value - state->dual_objective_value);
     state->relative_objective_gap =
         state->objective_gap / (1.0 + fabs(state->primal_objective_value) + fabs(state->dual_objective_value));
+    state->polish_relative_gap = state->relative_objective_gap;
 
     // FINAL LOGGING
     pdhg_feas_polish_final_log(primal_state, dual_state, params->verbose);
@@ -172,7 +181,7 @@ void primal_feasibility_polish(const pdhg_parameters_t *params,
         CUDA_CHECK(cudaGraphLaunch(graphExec, state->stream));
 
         compute_primal_fixed_point_error(state);
-        compute_primal_feas_polish_residual(state, ori_state, params->optimality_norm);
+        compute_primal_feas_polish_residual(state, ori_state->objective_vector, params->optimality_norm);
         state->inner_count += params->termination_evaluation_frequency;
         state->total_count += params->termination_evaluation_frequency;
 
@@ -247,7 +256,11 @@ void dual_feasibility_polish(const pdhg_parameters_t *params,
         CUDA_CHECK(cudaGraphLaunch(graphExec, state->stream));
 
         compute_dual_fixed_point_error(state);
-        compute_dual_feas_polish_residual(state, ori_state, params->optimality_norm);
+        compute_dual_feas_polish_residual(state, 
+                                        ori_state->constraint_lower_bound_finite_val,
+                                        ori_state->constraint_upper_bound_finite_val,
+                                        ori_state->pdhg_primal_solution,
+                                        params->optimality_norm);
         state->inner_count += params->termination_evaluation_frequency;
         state->total_count += params->termination_evaluation_frequency;
 

@@ -43,6 +43,17 @@ extern "C"
         NORM_TYPE_L_INF = 1
     } norm_type_t;
 
+    typedef enum
+    {
+        FEAS_POLISH_PROJECTION         = 0,  // Scheme 1: regularized proximal projection (AGD + restart, fixed step)
+        FEAS_POLISH_NORM_MIN           = 1,  // Scheme 2: unconstrained violation norm minimization
+        FEAS_POLISH_BASELINE           = 2,  // PDLP baseline: modify problem (obj=0 / bounds=0) and rerun standard PDHG
+        FEAS_POLISH_PROJECTION_BB      = 3,  // Scheme 1 + Barzilai-Borwein adaptive step size
+        FEAS_POLISH_PROJECTION_RESTART = 4,  // Scheme 1 + periodic / adaptive AGD restart
+        FEAS_POLISH_PROJECTION_OBJ     = 5,  // Scheme 1 + c^T x in primal phase (joint obj-feas optimization)
+        FEAS_POLISH_PROJECTION_BT      = 6   // Scheme 1 + backtracking line search (plain PG, no AGD)
+    } feas_polish_scheme_t;
+
     typedef struct
     {
         int num_variables;
@@ -98,6 +109,7 @@ extern "C"
         restart_parameters_t restart_params;
         double reflection_coefficient;
         bool feasibility_polishing;
+        feas_polish_scheme_t feas_polish_scheme;
         norm_type_t optimality_norm;
         bool presolve;
         double matrix_zero_tol;
@@ -139,6 +151,18 @@ extern "C"
         termination_reason_t termination_reason;
         double feasibility_polishing_time;
         int feasibility_iteration;
+        // Per-phase polishing metrics (populated by each polish scheme).
+        // primal_polish_*: stats for the primal feasibility phase
+        // dual_polish_*:   stats for the dual feasibility phase
+        double primal_polish_time_sec;
+        double dual_polish_time_sec;
+        int primal_polish_iterations;
+        int dual_polish_iterations;
+        double primal_polish_residual; // relative primal residual reached
+        double dual_polish_residual;   // relative dual residual reached
+        double polish_relative_gap;    // relative duality gap after polishing
+        termination_reason_t primal_polish_termination;
+        termination_reason_t dual_polish_termination;
     } cupdlpx_result_t;
 
     // matrix formats

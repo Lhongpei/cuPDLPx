@@ -123,6 +123,19 @@ typedef struct
     double feasibility_polishing_time;
     int feasibility_iteration;
 
+    /* Per-phase polishing metrics populated by each polish scheme.
+     * primal_polish_*: stats for the primal feasibility phase
+     * dual_polish_*:   stats for the dual feasibility phase */
+    double primal_polish_time_sec;
+    double dual_polish_time_sec;
+    int primal_polish_iterations;
+    int dual_polish_iterations;
+    double primal_polish_residual;
+    double dual_polish_residual;
+    double polish_relative_gap;
+    termination_reason_t primal_polish_termination;
+    termination_reason_t dual_polish_termination;
+
     cudaStream_t stream;
 } pdhg_solver_state_t;
 

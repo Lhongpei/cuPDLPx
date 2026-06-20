@@ -160,11 +160,13 @@ extern "C"
                                     bool verbose);
 
     void compute_primal_feas_polish_residual(pdhg_solver_state_t *state,
-                                             const pdhg_solver_state_t *ori_state,
+                                             const double *objective_vector,
                                              norm_type_t optimality_norm);
 
-    void compute_dual_feas_polish_residual(pdhg_solver_state_t *state,
-                                           const pdhg_solver_state_t *ori_state,
+    void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, 
+                                           const double* constraint_lower_bound_finite_val, 
+                                           const double* constraint_upper_bound_finite_val,
+                                           const double* primal_solution,
                                            norm_type_t optimality_norm);
 
     void set_default_parameters(pdhg_parameters_t *params);

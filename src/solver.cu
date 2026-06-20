@@ -241,7 +241,31 @@ cupdlpx_result_t *optimize(const pdhg_parameters_t *params, lp_problem_t *origin
     if (params->feasibility_polishing && state->termination_reason != TERMINATION_REASON_DUAL_INFEASIBLE &&
         state->termination_reason != TERMINATION_REASON_PRIMAL_INFEASIBLE)
     {
-        feasibility_polish(params, state);
+        switch (params->feas_polish_scheme)
+        {
+            case FEAS_POLISH_NORM_MIN:
+                norm_scheme_feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_BASELINE:
+                feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_PROJECTION_BB:
+                proj_bb_scheme_feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_PROJECTION_RESTART:
+                proj_restart_scheme_feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_PROJECTION_OBJ:
+                proj_obj_scheme_feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_PROJECTION_BT:
+                proj_bt_scheme_feasibility_polish(params, state);
+                break;
+            case FEAS_POLISH_PROJECTION:
+            default:
+                proj_scheme_feasibility_polish(params, state);
+                break;
+        }
     }
 
     cupdlpx_result_t *result = create_result_from_state(state, original_problem);
@@ -277,10 +301,10 @@ void sync_inner_count_to_gpu(pdhg_solver_state_t *state)
 
 static void check_params_validity(const pdhg_parameters_t *params)
 {
-    if (params->termination_evaluation_frequency < 3)
+    if (params->termination_evaluation_frequency < 1)
     {
         fprintf(stderr,
-                "Error: termination_evaluation_frequency must be >= 3 (got %d).\n",
+                "Error: termination_evaluation_frequency must be >= 1 (got %d).\n",
                 params->termination_evaluation_frequency);
         exit(EXIT_FAILURE);
     }
@@ -1271,6 +1295,15 @@ static cupdlpx_result_t *create_result_from_state(pdhg_solver_state_t *state, co
     results->termination_reason = state->termination_reason;
     results->feasibility_polishing_time = state->feasibility_polishing_time;
     results->feasibility_iteration = state->feasibility_iteration;
+    results->primal_polish_time_sec = state->primal_polish_time_sec;
+    results->dual_polish_time_sec = state->dual_polish_time_sec;
+    results->primal_polish_iterations = state->primal_polish_iterations;
+    results->dual_polish_iterations = state->dual_polish_iterations;
+    results->primal_polish_residual = state->primal_polish_residual;
+    results->dual_polish_residual = state->dual_polish_residual;
+    results->polish_relative_gap = state->polish_relative_gap;
+    results->primal_polish_termination = state->primal_polish_termination;
+    results->dual_polish_termination = state->dual_polish_termination;
     // if (presolve_stats != NULL) {
     //     results->presolve_stats = *presolve_stats;
     // } else {

@@ -138,6 +138,15 @@ void save_solver_summary(const cupdlpx_result_t *result, const char *output_dir,
     {
         fprintf(outfile, "Feasibility Polishing Time (sec): %e\n", result->feasibility_polishing_time);
         fprintf(outfile, "Feasibility Polishing Iteration Count: %d\n", result->feasibility_iteration);
+        fprintf(outfile, "Primal Polish Time (sec): %e\n", result->primal_polish_time_sec);
+        fprintf(outfile, "Primal Polish Iterations: %d\n", result->primal_polish_iterations);
+        fprintf(outfile, "Primal Polish Residual: %e\n", result->primal_polish_residual);
+        fprintf(outfile, "Primal Polish Status: %s\n", termination_reason_to_string(result->primal_polish_termination));
+        fprintf(outfile, "Dual Polish Time (sec): %e\n", result->dual_polish_time_sec);
+        fprintf(outfile, "Dual Polish Iterations: %d\n", result->dual_polish_iterations);
+        fprintf(outfile, "Dual Polish Residual: %e\n", result->dual_polish_residual);
+        fprintf(outfile, "Dual Polish Status: %s\n", termination_reason_to_string(result->dual_polish_termination));
+        fprintf(outfile, "Polish Relative Gap: %e\n", result->polish_relative_gap);
     }
     fclose(outfile);
     free(file_path);
@@ -204,6 +213,9 @@ void print_usage(const char *prog_name)
             "      --eps_feas_polish <tolerance>   Relative feasibility "
             "polish tolerance (default: 1e-6).\n");
     fprintf(stderr,
+            "      --feas_polish_scheme <scheme>   "
+            "Feasibility polishing scheme: 'projection', 'norm', 'baseline', or 'proj-bb' (default: projection).\n");
+    fprintf(stderr,
             "      --opt_norm <norm_type>          "
             "Norm for optimality criteria: l2 or linf (default: l2).\n");
     fprintf(stderr,
@@ -214,10 +226,43 @@ void print_usage(const char *prog_name)
             "Zero tolerance in constraint matrix.\n");
 }
 
+/* Load a one-value-per-line text file into a freshly-allocated double array.
+ * Returns the array (caller frees) on success, NULL on failure. */
+static double *load_solution_file(const char *path, int expected_count)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+    {
+        fprintf(stderr, "Warm-start: cannot open '%s'\n", path);
+        return NULL;
+    }
+    double *buf = (double *)safe_malloc((size_t)expected_count * sizeof(double));
+    int read_count = 0;
+    while (read_count < expected_count && fscanf(f, "%lf", &buf[read_count]) == 1)
+    {
+        read_count++;
+    }
+    fclose(f);
+    if (read_count != expected_count)
+    {
+        fprintf(stderr,
+                "Warm-start: file '%s' has %d values, expected %d\n",
+                path,
+                read_count,
+                expected_count);
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
 int main(int argc, char *argv[])
 {
     pdhg_parameters_t params;
     set_default_parameters(&params);
+
+    const char *warm_primal_path = NULL;
+    const char *warm_dual_path = NULL;
 
     static struct option long_options[] = {{"help", no_argument, 0, 'h'},
                                            {"verbose", no_argument, 0, 'v'},
@@ -238,6 +283,9 @@ int main(int argc, char *argv[])
                                            {"opt_norm", required_argument, 0, 1014},
                                            {"no_presolve", no_argument, 0, 1015},
                                            {"matrix_zero_tol", required_argument, 0, 1016},
+                                           {"feas_polish_scheme", required_argument, 0, 1017},
+                                           {"warm_start_primal", required_argument, 0, 1018},
+                                           {"warm_start_dual", required_argument, 0, 1019},
                                            {0, 0, 0, 0}};
 
     int opt;
@@ -317,6 +365,50 @@ int main(int argc, char *argv[])
             case 1016: // --matrix_zero_tol
                 params.matrix_zero_tol = atof(optarg);
                 break;
+            case 1017: // --feas_polish_scheme
+            {
+                const char *scheme_str = optarg;
+                if (strcmp(scheme_str, "projection") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_PROJECTION;
+                }
+                else if (strcmp(scheme_str, "norm") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_NORM_MIN;
+                }
+                else if (strcmp(scheme_str, "baseline") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_BASELINE;
+                }
+                else if (strcmp(scheme_str, "proj-bb") == 0 || strcmp(scheme_str, "proj_bb") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_PROJECTION_BB;
+                }
+                else if (strcmp(scheme_str, "proj-restart") == 0 || strcmp(scheme_str, "proj_restart") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_PROJECTION_RESTART;
+                }
+                else if (strcmp(scheme_str, "proj-obj") == 0 || strcmp(scheme_str, "proj_obj") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_PROJECTION_OBJ;
+                }
+                else if (strcmp(scheme_str, "proj-bt") == 0 || strcmp(scheme_str, "proj_bt") == 0)
+                {
+                    params.feas_polish_scheme = FEAS_POLISH_PROJECTION_BT;
+                }
+                else
+                {
+                    fprintf(stderr, "Error: feas_polish_scheme must be 'projection', 'norm', 'baseline', 'proj-bb', 'proj-restart', 'proj-obj', or 'proj-bt'\n");
+                    return 1;
+                }
+            }
+            break;
+            case 1018: // --warm_start_primal <path>
+                warm_primal_path = optarg;
+                break;
+            case 1019: // --warm_start_dual <path>
+                warm_dual_path = optarg;
+                break;
             case '?': // Unknown option
                 return 1;
         }
@@ -345,6 +437,31 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to read or parse the file.\n");
         free(instance_name);
         return 1;
+    }
+
+    if (warm_primal_path)
+    {
+        double *p = load_solution_file(warm_primal_path, problem->num_variables);
+        if (!p)
+        {
+            lp_problem_free(problem);
+            free(instance_name);
+            return 1;
+        }
+        if (problem->primal_start) free(problem->primal_start);
+        problem->primal_start = p;
+    }
+    if (warm_dual_path)
+    {
+        double *d = load_solution_file(warm_dual_path, problem->num_constraints);
+        if (!d)
+        {
+            lp_problem_free(problem);
+            free(instance_name);
+            return 1;
+        }
+        if (problem->dual_start) free(problem->dual_start);
+        problem->dual_start = d;
     }
 
     cupdlpx_result_t *result = solve_lp_problem(problem, &params);

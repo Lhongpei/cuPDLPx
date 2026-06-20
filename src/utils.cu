@@ -308,6 +308,7 @@ void set_default_parameters(pdhg_parameters_t *params)
     params->verbose = true;
     params->termination_evaluation_frequency = 200;
     params->feasibility_polishing = false;
+    params->feas_polish_scheme = FEAS_POLISH_PROJECTION;
     params->reflection_coefficient = 1.0;
     params->sv_max_iter = 5000;
     params->sv_tol = 1e-4;
@@ -1228,8 +1229,8 @@ __global__ void compute_dual_feas_polish_residual_kernel(double *__restrict__ du
     }
 }
 
-void compute_primal_feas_polish_residual(pdhg_solver_state_t *state,
-                                         const pdhg_solver_state_t *ori_state,
+void compute_primal_feas_polish_residual(pdhg_solver_state_t *state, 
+                                         const double *objective_vector,
                                          norm_type_t optimality_norm)
 {
     cupdlpx_spmv_Ax(state->sparse_handle, state->spmv_ctx, state->pdhg_primal_solution, state->primal_product);
@@ -1241,6 +1242,10 @@ void compute_primal_feas_polish_residual(pdhg_solver_state_t *state,
         state->constraint_upper_bound,
         state->constraint_rescaling,
         state->num_constraints);
+
+    cublasPointerMode_t old_mode;
+    cublasGetPointerMode(state->blas_handle, &old_mode);
+    cublasSetPointerMode(state->blas_handle, CUBLAS_POINTER_MODE_HOST);
 
     if (optimality_norm == NORM_TYPE_L_INF)
     {
@@ -1259,23 +1264,28 @@ void compute_primal_feas_polish_residual(pdhg_solver_state_t *state,
 
     CUBLAS_CHECK(cublasDdot(state->blas_handle,
                             state->num_variables,
-                            ori_state->objective_vector,
+                            objective_vector,
                             1,
                             state->pdhg_primal_solution,
                             1,
                             &state->primal_objective_value));
+                            
+    cublasSetPointerMode(state->blas_handle, old_mode);
+
     state->primal_objective_value =
         state->primal_objective_value / (state->constraint_bound_rescaling * state->objective_vector_rescaling) +
         state->objective_constant;
 }
 
-void compute_dual_feas_polish_residual(pdhg_solver_state_t *state,
-                                       const pdhg_solver_state_t *ori_state,
+void compute_dual_feas_polish_residual(pdhg_solver_state_t *state, 
+                                       const double* constraint_lower_bound_finite_val, 
+                                       const double* constraint_upper_bound_finite_val,
+                                       const double* primal_solution,
                                        norm_type_t optimality_norm)
 {
     cupdlpx_spmv_ATx(state->sparse_handle, state->spmv_ctx, state->pdhg_dual_solution, state->dual_product);
 
-    compute_dual_feas_polish_residual_kernel<<<state->num_blocks_primal_dual, THREADS_PER_BLOCK>>>(
+    compute_dual_feas_polish_residual_kernel<<<state->num_blocks_primal_dual, THREADS_PER_BLOCK, 0, state->stream>>>(
         state->dual_residual,
         state->pdhg_dual_solution,
         state->dual_product,
@@ -1283,10 +1293,14 @@ void compute_dual_feas_polish_residual(pdhg_solver_state_t *state,
         state->objective_vector,
         state->variable_rescaling,
         state->primal_slack,
-        ori_state->constraint_lower_bound_finite_val,
-        ori_state->constraint_upper_bound_finite_val,
+        constraint_lower_bound_finite_val,
+        constraint_upper_bound_finite_val,
         state->num_variables,
         state->num_constraints);
+
+    cublasPointerMode_t old_mode;
+    cublasGetPointerMode(state->blas_handle, &old_mode);
+    cublasSetPointerMode(state->blas_handle, CUBLAS_POINTER_MODE_HOST);
 
     if (optimality_norm == NORM_TYPE_L_INF)
     {
@@ -1308,11 +1322,15 @@ void compute_dual_feas_polish_residual(pdhg_solver_state_t *state,
                             state->num_variables,
                             state->dual_slack,
                             1,
-                            ori_state->pdhg_primal_solution,
+                            primal_solution,
                             1,
                             &base_dual_objective));
+                            
     double dual_slack_sum =
         get_vector_sum(state->blas_handle, state->num_constraints, state->ones_dual_d, state->primal_slack);
+        
+    cublasSetPointerMode(state->blas_handle, old_mode);
+
     state->dual_objective_value = (base_dual_objective + dual_slack_sum) /
             (state->constraint_bound_rescaling * state->objective_vector_rescaling) +
         state->objective_constant;
